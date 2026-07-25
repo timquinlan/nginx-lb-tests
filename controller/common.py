@@ -14,13 +14,14 @@ import sys
 # --- Paths -----------------------------------------------------------------
 # CONF_DIR is where the controller writes its *own* generated confs
 # (rr/aco/mc upstream blocks + the main server block). It is deliberately
-# NOT /etc/nginx/conf.d: a named volume mounted straight onto conf.d would
-# overlay (and hide) the base image's own conf.d/default.conf the first
-# time the volume is used, which breaks the "default NGINX location keeps
-# working, undisturbed" property this project relies on for a free
-# liveness check on port 80. Instead, generate_config.py drops one static,
-# non-volume-backed include file into the real /etc/nginx/conf.d that
-# just does `include {CONF_DIR}/*.conf;` -- see NGINX_STOCK_CONF_D below.
+# NOT /etc/nginx/conf.d: a bind mount (or named volume) mounted straight
+# onto conf.d would overlay (and hide) the base image's own
+# conf.d/default.conf the first time the mount is used, which breaks the
+# "default NGINX location keeps working, undisturbed" property this
+# project relies on for a free liveness check on port 80. Instead,
+# generate_config.py drops one static, non-mount-backed include file into
+# the real /etc/nginx/conf.d that just does `include {CONF_DIR}/*.conf;`
+# -- see NGINX_STOCK_CONF_D below.
 CONF_DIR = os.environ.get("CONF_DIR", "/var/lib/upstream-rl/nginx-conf.d")
 NGINX_STOCK_CONF_D = "/etc/nginx/conf.d"
 NGINX_INCLUDE_BOOTSTRAP_PATH = os.path.join(NGINX_STOCK_CONF_D, "upstream-rl-include.conf")
@@ -53,6 +54,14 @@ ALL_ALGO_NAMES = STATIC_ALGO_NAMES + DYNAMIC_ALGO_NAMES
 
 MIN_WEIGHT = 1
 MAX_WEIGHT = 100
+
+# The placeholder weight generate_config.py writes for aco/mc before priming
+# runs, and the constant weight stub.py's reference EqualWeightStub always
+# returns. Any equal integer in [MIN_WEIGHT, MAX_WEIGHT] would be a valid
+# placeholder (all backends carrying the same weight is pure round robin in
+# practice); shared here so the two aren't two independent "50"s that happen
+# to agree.
+EQUAL_WEIGHT_PLACEHOLDER = 50
 
 
 def read_upstream_hosts(path=None):
@@ -100,10 +109,6 @@ def read_location_paths(main_conf_path=None):
             if m:
                 paths.append(m.group(1))
     return paths
-
-
-def clamp_weight(w):
-    return max(MIN_WEIGHT, min(MAX_WEIGHT, int(round(w))))
 
 
 def resolve_ip_to_host_map(hosts, port=None):

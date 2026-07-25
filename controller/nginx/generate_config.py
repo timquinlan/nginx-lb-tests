@@ -30,14 +30,9 @@ from common import (
     DYNAMIC_ALGO_NAMES,
     STATIC_ALGO_NAMES,
     ALL_ALGO_NAMES,
+    EQUAL_WEIGHT_PLACEHOLDER,
 )
 from nginx.upstream_conf import write_upstream_conf, upstream_name
-
-# Equal-weight placeholder used for aco/mc until the priming run computes
-# real algorithm-derived weights. Any equal integer in [1,100] is a valid
-# placeholder -- the specific value doesn't matter since all backends carry
-# the same weight (pure round robin in practice until priming overwrites it).
-EQUAL_WEIGHT_PLACEHOLDER = 50
 
 RESOLVER_BY_MODE = {
     # Docker's embedded DNS server, resolves service names.
@@ -83,8 +78,8 @@ def render_main_conf(hosts, deploy_mode, port, log_dir):
 
 def write_include_bootstrap():
     """A single static line dropped into the base image's real conf.d (not
-    volume-backed, so it never masks conf.d/default.conf) that pulls in
-    everything the controller generates from the separate, volume-backed
+    mount-backed, so it never masks conf.d/default.conf) that pulls in
+    everything the controller generates from the separate, bind-mount-backed
     CONF_DIR. Cheap to regenerate identically on every startup."""
     content = f"include {CONF_DIR}/*.conf;\n"
     tmp_path = f"{NGINX_INCLUDE_BOOTSTRAP_PATH}.tmp"

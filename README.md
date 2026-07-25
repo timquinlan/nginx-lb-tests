@@ -85,6 +85,8 @@ docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
 
 Run it again (with different `--tick`/`--rps`/`--duration`) as many times as you like against the same container -- each run appends its own record to `runs.log`. See `AGENT.md` for why setup and traffic generation are split this way.
 
+Run these one at a time, not concurrently -- two overlapping `traffic_generator.py` invocations would collide on the same run index and mix their traffic together in the same access logs with no way to tell them apart afterward.
+
 Points at external backends instead of building local ones:
 
 ```sh

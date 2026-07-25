@@ -10,10 +10,9 @@ weights stay equal every window, so the change counter should stay at 1
 life of the run.
 """
 from algorithms.base import Algorithm
-
-EQUAL_WEIGHT = 50
+from common import EQUAL_WEIGHT_PLACEHOLDER
 
 
 class EqualWeightStub(Algorithm):
     def update(self, observations: dict) -> dict:
-        return {host: EQUAL_WEIGHT for host in observations}
+        return {host: EQUAL_WEIGHT_PLACEHOLDER for host in observations}

@@ -25,7 +25,13 @@ class Algorithm(ABC):
 
         Returns {backend_host: integer_weight} with every weight clamped to
         [MIN_WEIGHT, MAX_WEIGHT] (1-100). Must return a weight for every host
-        it was given, plus any it has seen in a prior call for this run.
+        it was given this call. If your algorithm keeps state across calls
+        (like ACO's pheromone table), it should also return a weight for
+        every host it's seen in any prior call this run, not just this
+        window's -- but that's only meaningful for stateful algorithms.
+        A memoryless algorithm (like the Markov module) has no prior calls
+        to remember by design, so it trivially satisfies this by only ever
+        returning weights for the hosts it was just given.
         """
         raise NotImplementedError
 
