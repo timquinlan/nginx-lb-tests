@@ -1,0 +1,14 @@
+# Lines starting with # are comments
+# Each line is a hostname or IP that NGINX will proxy to.
+#
+# In docker-compose.full.yml these are Docker service names resolved by
+# Docker DNS. In docker-compose.controller.yml these can be any reachable
+# external hostname or IP (real servers, cloud VMs, other devices).
+#
+# The number of entries is variable -- nothing in the codebase hardcodes 5
+# backends. Scaling from 5 to 10 to 25 is a matter of adding lines here.
+backend-1
+backend-2
+backend-3
+backend-4
+backend-5

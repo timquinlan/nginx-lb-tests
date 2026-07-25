@@ -1,0 +1,25 @@
+services:
+  # Controller only -- no backend containers are built or started. Point
+  # upstream-hosts.txt at reachable external hosts/IPs before starting this.
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    environment:
+      DEPLOY_MODE: external
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    volumes:
+      - ./upstream-hosts.txt:/app/upstream-hosts.txt:ro
+      # Same host paths as docker-compose.full.yml by design -- switching
+      # deployment modes against the same generated-conf/log data is
+      # intentional, not accidental sharing.
+      - ./nginx-conf:/var/lib/upstream-rl/nginx-conf.d
+      - ./logs:/var/log/upstream-rl
+    ports:
+      - "8080:8080"
+      - "80:80"
+    networks:
+      - upstream-rl
+
+networks:
+  upstream-rl:

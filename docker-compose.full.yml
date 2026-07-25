@@ -1,0 +1,91 @@
+services:
+  backend-1:
+    build:
+      context: ./backend
+    environment:
+      LATENCY_MIN_MS: "10"
+      LATENCY_MAX_MS: "20"
+      DEGRADATION_MULTIPLIER: "2"
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    networks:
+      - upstream-rl
+
+  backend-2:
+    build:
+      context: ./backend
+    environment:
+      LATENCY_MIN_MS: "5"
+      LATENCY_MAX_MS: "40"
+      DEGRADATION_MULTIPLIER: "4"
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    networks:
+      - upstream-rl
+
+  backend-3:
+    build:
+      context: ./backend
+    environment:
+      LATENCY_MIN_MS: "12"
+      LATENCY_MAX_MS: "18"
+      DEGRADATION_MULTIPLIER: "2"
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    networks:
+      - upstream-rl
+
+  backend-4:
+    build:
+      context: ./backend
+    environment:
+      LATENCY_MIN_MS: "15"
+      LATENCY_MAX_MS: "60"
+      DEGRADATION_MULTIPLIER: "4"
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    networks:
+      - upstream-rl
+
+  backend-5:
+    build:
+      context: ./backend
+    environment:
+      LATENCY_MIN_MS: "30"
+      LATENCY_MAX_MS: "80"
+      DEGRADATION_MULTIPLIER: "6"
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    networks:
+      - upstream-rl
+
+  # Adding a 6th+ backend for local dev means adding both a service here
+  # (full mode builds/runs the container) and a line in upstream-hosts.txt
+  # (the controller's source of truth). Only full mode needs the former --
+  # docker-compose.controller.yml scales purely by editing the hosts file,
+  # since it never builds backend containers. See AGENT.md "Scaling
+  # Roadmap".
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    environment:
+      DEPLOY_MODE: full
+      TICK_SECONDS: "${TICK_SECONDS:-60}"
+    volumes:
+      - ./upstream-hosts.txt:/app/upstream-hosts.txt:ro
+      # Bind mounts to plain host directories, not named volumes -- so logs
+      # and generated confs are directly browsable from the Mac side
+      # (`ls ./logs`, feed straight into Phase 4 analysis scripts) without
+      # `docker cp`/`docker exec`. Created on first run if missing.
+      - ./nginx-conf:/var/lib/upstream-rl/nginx-conf.d
+      - ./logs:/var/log/upstream-rl
+    ports:
+      - "8080:8080"
+      - "80:80"
+    depends_on:
+      - backend-1
+      - backend-2
+      - backend-3
+      - backend-4
+      - backend-5
+    networks:
+      - upstream-rl
+
+networks:
+  upstream-rl:
