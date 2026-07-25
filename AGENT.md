@@ -62,7 +62,7 @@ Log format: `$msec | $uri | $upstream_addr | $upstream_response_time | $upstream
 
 ## Phase 1 algorithm stub
 
-`controller/algorithms/stub.py`'s `EqualWeightStub` was wired to both `/aco` and `/mc` in Phase 1, so the sampling/config-writer/change-counter plumbing was exercisable end-to-end before any ACO or Markov math existed. `/mc` still uses it — Markov doesn't land until Phase 3 (standing instruction: don't implement it until ACO is verified).
+`controller/algorithms/stub.py`'s `EqualWeightStub` was wired to both `/aco` and `/mc` in Phase 1, so the sampling/config-writer/change-counter plumbing was exercisable end-to-end before any ACO or Markov math existed. Left in the tree, unwired, as a minimal reference implementation of the `Algorithm` interface — Phase 3 replaced it on `/mc` with the real Markov module.
 
 ## Phase 2: ACO
 
@@ -71,6 +71,18 @@ Log format: `$msec | $uri | $upstream_addr | $upstream_response_time | $upstream
 Both constants are overridable via environment variables (`ACO_EVAPORATION_RATE`, `ACO_DEPOSIT_CONSTANT`) and exposed in both Compose files the same way `TICK_SECONDS` is.
 
 **Verified with a live 20-tick (100s) run at a 5s smoke-test tick:** priming immediately separated weights by observed latency (fastest backend → 100, slowest → 71 on one run); the change counter climbed continuously (26 changes over 22 windows) rather than flatlining, confirming ongoing learning rather than early convergence; `/aco`'s backend-selection distribution diverged from `/rr`'s and skewed toward the lower-latency backends. The change counter climbing on *every* window is expected, not a bug: the staircase degradation cycles are shorter than several sampling windows, so the "true" latency ranking itself keeps shifting, and ACO (by design) never fully settles while that's happening.
+
+## Phase 3: Markov Chain
+
+`controller/algorithms/markov.py`'s `MarkovChain` is now wired to `/mc` in `sampler.py`, running simultaneously with ACO on `/aco`. Genuinely memoryless: `update()` holds no instance state at all between calls (contrast `AntColonyOptimization.__init__`'s persisted `self.pheromone`) — the transition matrix is rebuilt entirely fresh from that window's `observations` dict every time.
+
+**Transition matrix construction:** `score[h] = 1 / latency_ms[h]` (lower latency, higher score), and row `i`'s outgoing probabilities are `score[j] / sum(score[k] for k != i)` for every `j != i`, with `P[i][i] = 0` — no self-transitions, so every window models moving to a (possibly different) backend, weighted toward whichever others were faster. Excluding `i` from its own row's normalization denominator is what makes each row genuinely depend on state `i` (i.e. an actual transition matrix, not just the same preference vector copy-pasted into every row, which would trivialize "transition matrix" down to "normalized inverse-latency vector with an unnecessary square-matrix wrapper").
+
+**Stationary distribution** is computed by plain power iteration (repeated `π ← πP` from a uniform start, up to 200 iterations or until the L1 change drops below `1e-9`) — no need for `numpy`/eigen-decomposition at this backend-count scale, and it's the standard textbook method regardless of scale.
+
+**Weight conversion is direct scaling, not max-relative like ACO:** `weight = clamp(100 * stationary_probability)`. This is deliberately different from ACO's `100 * pheromone / max(pheromone)` — a stationary distribution is already a normalized proportion-of-time-in-each-state, so scaling it straight by 100 carries that proportion directly into the weight ratios; pheromone is an unbounded accumulator that only means something relative to the current leader. Same underlying pattern (turn a per-backend score into an NGINX weight), different scaling rule because the two scores have different shapes.
+
+**Verified with a live 20-tick (100s) run, all three paths running simultaneously:** priming produced visibly different weight distributions for ACO vs. Markov from the *same* underlying latency observations (one run: ACO gave the slowest backend a weight of 41, Markov gave it 2) — concretely demonstrating ACO's momentum vs. Markov's memoryless responsiveness described in the design doc. Both change counters climbed on nearly every one of 20 windows (23/23) — Markov's lack of any smoothing makes it at least as noisy as ACO here, arguably more so, matching "adapts quickly... noisier." All three access logs (`rr`/`aco`/`mc`) landed at exactly 501 lines each (500 requests + the traffic generator's immediate first-fire), confirming genuinely concurrent traffic across all three paths, and `runs.log` recorded both `aco` and `mc` change counts in one record.
 
 ### NGINX `worker_processes` pinned to 1 (bug found verifying Phase 2)
 

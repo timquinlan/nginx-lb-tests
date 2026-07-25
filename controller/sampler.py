@@ -8,9 +8,9 @@ stderr only -- this is Stream 1 (operational), never analyzed by Phase 4.
 Phase 1 wired every dynamic algorithm to the equal-weight stub so the
 plumbing (priming, sampling cadence, sparse-observation fallback, config
 writer, change counter) could be exercised end-to-end before any real
-ACO/Markov math existed. Phase 2 swaps in the real ACO module for /aco;
-/mc stays on the stub until Phase 3 (standing instruction: don't implement
-Markov until ACO is verified).
+ACO/Markov math existed. Phase 2 swapped in the real ACO module for /aco.
+Phase 3 swaps in the real Markov module for /mc -- both dynamic algorithms
+now run their real math simultaneously.
 """
 import http.client
 import os
@@ -28,7 +28,7 @@ from common import (
     resolve_ip_to_host_map,
 )
 from algorithms.aco import AntColonyOptimization
-from algorithms.stub import EqualWeightStub
+from algorithms.markov import MarkovChain
 import config_writer
 import validate_backends
 
@@ -36,7 +36,7 @@ PROBE_TIMEOUT_SECONDS = 5
 
 ALGORITHMS = {
     "aco": AntColonyOptimization(),
-    "mc": EqualWeightStub(),
+    "mc": MarkovChain(),
 }
 
 _log_offsets = {}  # algo_name -> byte offset into its access log, in-memory
