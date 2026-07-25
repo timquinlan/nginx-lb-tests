@@ -29,6 +29,7 @@ from common import (
     RUNS_LOG_PATH,
     LOG_DIR,
     DYNAMIC_ALGO_NAMES,
+    TICK_SECONDS,
 )
 import config_writer
 
@@ -171,7 +172,18 @@ def run(tick_seconds, rps, duration_ticks):
 
 def main():
     parser = argparse.ArgumentParser(description="upstream-rl traffic generator")
-    parser.add_argument("--tick", type=float, default=60, help="base tick unit in seconds (default 60)")
+    parser.add_argument(
+        "--tick",
+        type=float,
+        default=TICK_SECONDS,
+        help=(
+            "base tick unit in seconds -- defaults to this container's own TICK_SECONDS "
+            f"env var (currently {TICK_SECONDS}s), which is also what the sampling loops "
+            "and backend degradation cycles are actually running on. Only override this "
+            "if you deliberately want this run's status-line/duration accounting to use a "
+            "different unit than the sampling cadence underneath -- see AGENT.md."
+        ),
+    )
     parser.add_argument("--rps", type=float, default=5, help="requests per second, per algorithm path (default 5)")
     parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
     args = parser.parse_args()
