@@ -5,11 +5,12 @@ backend list from upstream-hosts.txt (same source NGINX config generation
 reads) so the controller and NGINX always agree on the pool. Logs to
 stderr only -- this is Stream 1 (operational), never analyzed by Phase 4.
 
-Phase 1 wires every dynamic algorithm to the equal-weight stub so the
+Phase 1 wired every dynamic algorithm to the equal-weight stub so the
 plumbing (priming, sampling cadence, sparse-observation fallback, config
-writer, change counter) is exercised end-to-end before any real ACO/Markov
-math exists. Phase 2/3 swap in real modules here without touching anything
-else in this file.
+writer, change counter) could be exercised end-to-end before any real
+ACO/Markov math existed. Phase 2 swaps in the real ACO module for /aco;
+/mc stays on the stub until Phase 3 (standing instruction: don't implement
+Markov until ACO is verified).
 """
 import http.client
 import os
@@ -26,6 +27,7 @@ from common import (
     DYNAMIC_ALGO_NAMES,
     resolve_ip_to_host_map,
 )
+from algorithms.aco import AntColonyOptimization
 from algorithms.stub import EqualWeightStub
 import config_writer
 import validate_backends
@@ -33,7 +35,7 @@ import validate_backends
 PROBE_TIMEOUT_SECONDS = 5
 
 ALGORITHMS = {
-    "aco": EqualWeightStub(),
+    "aco": AntColonyOptimization(),
     "mc": EqualWeightStub(),
 }
 

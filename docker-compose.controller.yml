@@ -8,6 +8,8 @@ services:
     environment:
       DEPLOY_MODE: external
       TICK_SECONDS: "${TICK_SECONDS:-60}"
+      ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.1}"
+      ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
     volumes:
       - ./upstream-hosts.txt:/app/upstream-hosts.txt:ro
       # Same host paths as docker-compose.full.yml by design -- switching

@@ -62,7 +62,21 @@ Log format: `$msec | $uri | $upstream_addr | $upstream_response_time | $upstream
 
 ## Phase 1 algorithm stub
 
-`controller/algorithms/stub.py`'s `EqualWeightStub` is wired to both `/aco` and `/mc` in Phase 1. It always returns the same weight regardless of observations, so the sampling/config-writer/change-counter plumbing is exercisable end-to-end before any ACO or Markov math exists (standing instruction: don't implement those until Phase 1 is verified). Expect the change counter to land at 1 per algorithm (the placeholder → primed transition) and stay there — that's the plumbing working correctly, not a bug.
+`controller/algorithms/stub.py`'s `EqualWeightStub` was wired to both `/aco` and `/mc` in Phase 1, so the sampling/config-writer/change-counter plumbing was exercisable end-to-end before any ACO or Markov math existed. `/mc` still uses it — Markov doesn't land until Phase 3 (standing instruction: don't implement it until ACO is verified).
+
+## Phase 2: ACO
+
+`controller/algorithms/aco.py`'s `AntColonyOptimization` is now wired to `/aco` in `sampler.py`. One pheromone float per backend: every window, evaporate all of them by `ACO_EVAPORATION_RATE` (default `0.1`, i.e. retain 90%), then add `ACO_DEPOSIT_CONSTANT / latency_ms` (default constant `10.0`) — lower latency deposits more, satisfying "higher latency = less reinforcement." Weights are read off the pheromone table **relative to its current max**, not normalized to sum to 100: `weight = clamp(100 * pheromone / max(pheromone.values()))`. Sum-based normalization gets coarser as backend count grows (each share shrinks toward `1/N`); max-relative scaling keeps the top backend at ~100 regardless of pool size, so it doesn't degrade at higher backend counts (see Scaling).
+
+Both constants are overridable via environment variables (`ACO_EVAPORATION_RATE`, `ACO_DEPOSIT_CONSTANT`) and exposed in both Compose files the same way `TICK_SECONDS` is.
+
+**Verified with a live 20-tick (100s) run at a 5s smoke-test tick:** priming immediately separated weights by observed latency (fastest backend → 100, slowest → 71 on one run); the change counter climbed continuously (26 changes over 22 windows) rather than flatlining, confirming ongoing learning rather than early convergence; `/aco`'s backend-selection distribution diverged from `/rr`'s and skewed toward the lower-latency backends. The change counter climbing on *every* window is expected, not a bug: the staircase degradation cycles are shorter than several sampling windows, so the "true" latency ranking itself keeps shifting, and ACO (by design) never fully settles while that's happening.
+
+### NGINX `worker_processes` pinned to 1 (bug found verifying Phase 2)
+
+While checking `/rr`'s backend-selection distribution as an "it should be ~uniform" sanity check, it came back meaningfully skewed (178 vs 57 requests across backends, in a 501-request run) even though `/rr` is plain unweighted round robin that NGINX never touches. Cause: the base image's `worker_processes auto` had started 10 workers (one per visible CPU core on this machine), and NGINX's round-robin state — weighted or not — is kept independently *per worker process*. Each worker balances correctly on its own, but the aggregate across 10 independent counters at only ~500 total requests looked skewed. This affects `/aco` and `/mc` identically, not just `/rr` — it's a general noise floor from the process model, not something biasing one path over another.
+
+First attempt at a fix — `nginx -g "daemon off; worker_processes 1;"` — crashed the container outright: `worker_processes` is already set in the base image's `nginx.conf`, and NGINX refuses a directive supplied both via `-g` and in the config file ("duplicate directive", exit code 1). Actual fix: `entrypoint.py`'s `pin_worker_processes()` patches that one `worker_processes auto;` line in `/etc/nginx/nginx.conf` in place (regex substitution) before NGINX starts, since the directive can't be set from our generated `conf.d` includes either (main-context only, those are `http{}`-scoped). Trades multi-core concurrency for a single, precisely interpretable round-robin/weighted state, matching this project's stated priority (reproducible measurement over raw throughput).
 
 ## `runs.log` format
 
