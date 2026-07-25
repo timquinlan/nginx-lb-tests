@@ -33,7 +33,15 @@ from common import (
 import config_writer
 
 REQUEST_TIMEOUT_SECONDS = 10
-MAX_WORKERS_PER_PATH = 20
+MIN_WORKERS_PER_PATH = 20
+# Rough Little's Law sizing (concurrency ~= rps * latency): the slowest
+# backend's max latency range plus the top degradation step is ~330ms with
+# the default backend pool, so 0.5s/request gives comfortable headroom. A
+# fixed small pool would otherwise silently throttle throughput at higher
+# --rps targets with no error at all -- ThreadPoolExecutor.submit() just
+# queues faster than it drains, so the achieved rate quietly falls short
+# of what was requested instead of failing loudly.
+WORKERS_PER_REQUESTED_RPS = 0.5
 
 
 def send_request(path):
@@ -107,8 +115,11 @@ def run(tick_seconds, rps, duration_ticks):
 
     log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path duration={duration_ticks} ticks ({total_duration_seconds}s)")
 
+    workers_per_path = max(MIN_WORKERS_PER_PATH, int(rps * WORKERS_PER_REQUESTED_RPS))
+    log("traffic_generator", f"sizing thread pool at {workers_per_path} workers/path for {rps}rps/path")
+
     stop_event = threading.Event()
-    executors = {path: ThreadPoolExecutor(max_workers=MAX_WORKERS_PER_PATH) for path in paths}
+    executors = {path: ThreadPoolExecutor(max_workers=workers_per_path) for path in paths}
     loop_threads = []
     for path in paths:
         t = threading.Thread(

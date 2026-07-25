@@ -76,6 +76,10 @@ def now_ms():
     return int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
 
 
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def log(component, message, stream=sys.stderr):
     """Stream 1 (operational) logging -- stderr/stdout only, never analyzed
     by Phase 4 tooling. See AGENT.md 'Two Distinct Data Streams'."""
