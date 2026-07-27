@@ -37,6 +37,17 @@ LOW_CHANGE_RATIO = 0.3  # see print_warnings()
 # experiment design, not something inferable from which log files exist.
 CONTROL_ALGO = "rr"
 
+# Algorithms that adaptively compute weights from observed latency every
+# sampling window (see AGENT.md). Everything else discover_algos() finds
+# is a static, built-in NGINX selection mechanism -- rr, plus NGINX's own
+# random/random-two/least_conn upstream-block directives (see
+# controller/common.py's STATIC_ALGO_METHODS). Hardcoded here, same
+# reasoning as CONTROL_ALGO above: which group an algorithm belongs to is
+# a fact about the experiment design, not derivable from which log files
+# happen to exist. Used by write_stats_report's "best built-in vs best
+# adaptive" incremental comparison below.
+ADAPTIVE_ALGO_NAMES = ("aco", "mc")
+
 # One knob, not two: SIGNIFICANCE_ALPHA is both the Mann-Whitney verdict
 # threshold and (as 1 - alpha) the bootstrap CI's coverage level. Exposing
 # separate --alpha/--ci flags would let them drift out of sync (e.g. a
@@ -202,6 +213,16 @@ def format_delta_line(stat_name, point_delta, control_value, ci_lo, ci_hi, alpha
     )
 
 
+def rank_algos(per_algo, stat_name="mean"):
+    """Every algorithm with TTFB data this run, best (lowest -- lower TTFB
+    is better) to worst, by the given stat. Algorithms with no data
+    (empty sample) are omitted entirely rather than ranked last with a
+    placeholder -- there's nothing to rank."""
+    ranked = [(algo, data) for algo, data in per_algo.items() if data["stats"] is not None]
+    ranked.sort(key=lambda item: item[1]["stats"][stat_name])
+    return ranked
+
+
 def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
                         n_resamples=BOOTSTRAP_RESAMPLES, max_bootstrap_sample=BOOTSTRAP_MAX_SAMPLE):
     """The overall statistical comparison report: TTFB mean/median/p90/p95/p99
@@ -238,6 +259,20 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
         lines.append(format_stats_row(algo, data["stats"]))
     lines.append("")
 
+    ranked = rank_algos(per_algo, "mean")
+    lines.append("--- ranked best to worst (by mean TTFB, lower is better) ---")
+    if not ranked:
+        lines.append("n/a -- no algorithm produced any TTFB data this run")
+    else:
+        for i, (algo, data) in enumerate(ranked, start=1):
+            stats = data["stats"]
+            tag = " [control]" if algo == CONTROL_ALGO else (" [adaptive]" if algo in ADAPTIVE_ALGO_NAMES else " [built-in]")
+            lines.append(
+                f"  {i}. {algo:<10} mean={stats['mean']:>8.1f}ms  median={stats['median']:>8.1f}ms  "
+                f"p95={stats['p95']:>8.1f}ms{tag}"
+            )
+    lines.append("")
+
     lines.append(
         f"--- LB-to-upstream TTFB bands (elite <={common.TTFB_ELITE_MAX_MS:.0f}ms, good "
         f"<={common.TTFB_GOOD_MAX_MS:.0f}ms, acceptable <={common.TTFB_ACCEPTABLE_MAX_MS:.0f}ms, "
@@ -262,9 +297,53 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
             )
     lines.append("")
 
+    # --- incremental: best built-in NGINX mechanism vs best adaptive algorithm ---
+    # Once there are multiple static/built-in candidates (rr, random,
+    # random2, leastconn) and multiple adaptive candidates (aco, mc), the
+    # fixed rr-vs-everyone comparison below doesn't say which of each
+    # GROUP actually won -- it only ever measures each algorithm against
+    # one specific static baseline. This compares the strongest of each
+    # group head-to-head instead. Independent of whether rr itself has
+    # data this run (see the control-missing branch below), since rr is
+    # just one of several possible "best built-in" candidates here, not a
+    # prerequisite for this comparison.
+    lines.append("--- best built-in NGINX mechanism vs best adaptive algorithm ---")
+    builtin_ranked = [item for item in ranked if item[0] not in ADAPTIVE_ALGO_NAMES]
+    adaptive_ranked = [item for item in ranked if item[0] in ADAPTIVE_ALGO_NAMES]
+    if not builtin_ranked or not adaptive_ranked:
+        lines.append("n/a -- need at least one built-in and one adaptive algorithm with TTFB data this run")
+    else:
+        best_builtin_algo, best_builtin_data = builtin_ranked[0]
+        best_adaptive_algo, best_adaptive_data = adaptive_ranked[0]
+        lines.append(f"best built-in: {best_builtin_algo}  (mean={best_builtin_data['stats']['mean']:.1f}ms)")
+        lines.append(f"best adaptive: {best_adaptive_algo}  (mean={best_adaptive_data['stats']['mean']:.1f}ms)")
+
+        builtin_sample = best_builtin_data["header_times"]
+        adaptive_sample = best_adaptive_data["header_times"]
+        u_stat, p_value = common.mann_whitney_u(adaptive_sample, builtin_sample)
+        if p_value is None:
+            lines.append("Mann-Whitney U: n/a (empty sample)")
+        else:
+            verdict = "statistically significant" if p_value < alpha else "not statistically significant"
+            lines.append(
+                f"Mann-Whitney U p-value: {p_value:.4g}  -> {verdict} at alpha={alpha} "
+                f"(whole TTFB distribution, {best_adaptive_algo} vs {best_builtin_algo})"
+            )
+
+        builtin_capped = common.capped_sample(builtin_sample, max_bootstrap_sample, rng)
+        adaptive_capped = common.capped_sample(adaptive_sample, max_bootstrap_sample, rng)
+        if len(builtin_capped) < len(builtin_sample) or len(adaptive_capped) < len(adaptive_sample):
+            lines.append(f"  (bootstrap below uses a random {max_bootstrap_sample}-observation subsample per side; point deltas are still full-data)")
+        cis = common.bootstrap_delta_cis(adaptive_capped, builtin_capped, rng, n_resamples=n_resamples, ci=1 - alpha)
+        for stat_name in common.STAT_NAMES:
+            point_delta = best_adaptive_data["stats"][stat_name] - best_builtin_data["stats"][stat_name]
+            ci_lo, ci_hi = cis[stat_name]
+            lines.append(format_delta_line(stat_name, point_delta, best_builtin_data["stats"][stat_name], ci_lo, ci_hi, alpha))
+    lines.append("")
+
     control_data = per_algo.get(CONTROL_ALGO)
     if control_data is None or control_data["stats"] is None:
-        lines.append(f"NOTE: no {CONTROL_ALGO!r} TTFB data found in this run -- skipping significance comparison.")
+        lines.append(f"NOTE: no {CONTROL_ALGO!r} TTFB data found in this run -- skipping rr-control significance comparison.")
         path = os.path.join(out_dir, f"run{run['run_index']}_stats_report.txt")
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")

@@ -42,10 +42,12 @@ $msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time 
 **`start_ts_ms`/`end_ts_ms` are the only thing that separates one run's
 requests from another's afterward.**
 
-**`{algo}.weights.csv`** (dynamic algorithms only — `rr` has none, since
-it's static/unweighted) — wide-form, one row per sampling window,
-regardless of whether the weights actually changed: `timestamp_ms,
-timestamp_iso, <one column per backend>`.
+**`{algo}.weights.csv`** (dynamic algorithms only — `rr`, `random`,
+`random2`, and `leastconn` have none, since all four are
+static/unweighted; NGINX's own method directive does the selecting) —
+wide-form, one row per sampling window, regardless of whether the weights
+actually changed: `timestamp_ms, timestamp_iso, <one column per
+backend>`.
 
 ## Run isolation
 
@@ -95,7 +97,16 @@ Compose volume was needed for this.
   (n/a)` for `rr`).
 - **`runN_stats_report.txt`** — the overall statistical comparison: TTFB
   mean/median/p90/p95/p99 for every discovered algorithm (point estimates,
-  full data), then, for each non-control algorithm vs `rr` (the control —
+  full data); every algorithm ranked best-to-worst by mean TTFB
+  (`rank_algos()`, tagged `[control]`/`[adaptive]`/`[built-in]`); an
+  incremental head-to-head between the best-performing static/built-in
+  algorithm (`rr`, `random`, `random2`, `leastconn`) and the
+  best-performing adaptive algorithm (`aco`, `mc`) — same Mann-Whitney +
+  bootstrap-CI machinery as the control comparisons below, just between
+  those two specific algorithms instead of each-vs-`rr` (see `AGENT.md`,
+  "Phase 5"; which algorithm names count as "adaptive" is hardcoded as
+  `ADAPTIVE_ALGO_NAMES` in `analyze.py`, same reasoning as `CONTROL_ALGO`
+  below); then, for each non-control algorithm vs `rr` (the control —
   see `CONTROL_ALGO` in `analyze.py`):
   - a **Mann-Whitney U p-value** on the full TTFB samples — is the overall
     distribution different from the control at all, with no assumption
@@ -140,9 +151,14 @@ Compose volume was needed for this.
   whichever algorithm routed to it), signed: positive means the pool was
   net slower than baseline that window, negative means net faster.
 - **`runN_{algo}_selection_frequency.png`** — one chart per algorithm,
-  one line per backend, request count per analysis window. `rr`'s should
-  look roughly flat/uniform — that's the sanity-check baseline the other
-  two are meant to visibly diverge from.
+  one line per backend, request count per analysis window. `rr`'s and
+  `random`'s should both look roughly flat/uniform (round robin and an
+  unweighted dice roll have no reason to favor one backend over another)
+  — that's the sanity-check baseline `aco`/`mc` are meant to visibly
+  diverge from. `random2`'s and `leastconn`'s sit in between: not driven
+  by latency at all, but not perfectly flat either, since NGINX's own
+  live connection-count tiebreak can still mildly favor a backend that
+  happens to finish requests faster.
 - **Stderr warning** if an algorithm changed weights in less than 30% of
   its sampling windows during the run — signals early convergence (design
   doc: "user may need to increase backend variability").

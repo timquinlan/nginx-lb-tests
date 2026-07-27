@@ -202,14 +202,20 @@ def main():
             "different unit than the sampling cadence underneath -- see AGENT.md."
         ),
     )
-    # Lowered from 250 to 125rps/path when /random, /random2, and
-    # /leastconn were added alongside /rr/aco/mc: 6 paths at the old
-    # 250rps/path default would have pushed aggregate load to ~1500rps,
-    # roughly double what the ~650rps/path single-core ceiling (README,
-    # "Choosing --rps") was measured against with only 3 paths. 125rps/path
-    # x 6 paths keeps aggregate load (~750rps) at the same level the old
-    # default was actually validated at -- see AGENT.md.
-    parser.add_argument("--rps", type=float, default=125, help="requests per second, per algorithm path (default 125)")
+    # Raised to 500rps/path (from 250, briefly from 125 before that) now
+    # that worker_processes is 4, not 1, with a `zone` directive on every
+    # upstream block (see AGENT.md, "Phase 6"). Verified live at
+    # 500rps/path (~3000rps aggregate across all six paths) with zero
+    # errors in any *.error.log and the controller container holding
+    # around 130% CPU -- well under the ~400% four fully-saturated workers
+    # could reach. 500rps/path also approximates a sustained ~1B-hits/month
+    # production load (double the ~500M/month the original 250 default was
+    # chosen to approximate, back when this project ran 3 paths on 1
+    # worker -- see AGENT.md). CPU-vs-rps is not assumed linear here (250
+    # measured separately at ~84-85% CPU, i.e. more than half of the
+    # 500rps/path figure) -- this is a directly-measured resting point,
+    # not an extrapolation.
+    parser.add_argument("--rps", type=float, default=500, help="requests per second, per algorithm path (default 500)")
     parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
     args = parser.parse_args()
 
