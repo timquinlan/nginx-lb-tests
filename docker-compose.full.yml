@@ -1,36 +1,41 @@
 services:
-  # Personality removed (see AGENT.md, "backends share a baseline, drift
-  # independently" -- this supersedes the "still distinct, narrow later"
-  # plan recorded there; simplified straight to the shared-baseline
-  # end-state instead of narrowing gradually). All 5 backends now share
-  # the SAME LATENCY_MIN_MS/MAX_MS -- no more per-backend "personality" --
-  # so every backend still gets fresh per-request jitter within that
-  # shared range, but the only thing that ever differentiates one backend
-  # from another over time is the independently-drawn drift offset below.
-  # LATENCY_MIN_MS/MAX_MS default (10-20ms) is `backend-1`'s old range,
-  # kept as the shared baseline mostly because it happens to match
-  # "Standard 5G (MEC Edge)" on a real edge-latency benchmark table -- see
-  # AGENT.md.
+  # Personality restored (see AGENT.md, "backends share a baseline, drift
+  # independently" -- shared-baseline was tried, produced a real, useful
+  # data point (run 19), but the DEFAULT reverted back to distinct
+  # personalities: if every backend performs identically on average, the
+  # honest pitch is "just use anycast" -- there's no persistent structural
+  # difference left to learn. Distinct personalities represent a
+  # realistic heterogeneous-hardware fleet (some backends permanently
+  # weaker, e.g. older CPUs deliberately kept as low-weight backups) --
+  # exactly the kind of persistent asymmetry anycast's network-proximity
+  # routing can't see, which is where this project's approach earns its
+  # keep instead of duplicating what anycast already gives you for free.
   #
-  # DEGRADATION_OFFSET_MIN_MS/MAX_MS -- shared across all 5 backends (same
-  # distribution; only the independent per-backend *draw* differs, same
-  # as it already was). Each backend independently redraws a signed
-  # offset (negative = currently faster than baseline, positive = slower)
-  # at every dwell transition -- asymmetric range on purpose, more
-  # physical room to get worse than to get better.
+  # LATENCY_MIN_MS/MAX_MS below are each backend's fixed personality
+  # range again (hardcoded per backend, not a shared override -- a
+  # single shared variable can't express 5 different defaults). To
+  # "level them out" for an identical-node run (e.g. to reproduce the
+  # shared-baseline methodology check), edit these 5 values directly for
+  # that run rather than looking for an env var -- same workflow already
+  # used for every other backend-config experiment in this project
+  # (halved/doubled latency, wide-range offset, etc.).
   #
-  # DEGRADATION_MEAN_DWELL_SECONDS (still per-backend) controls each
-  # backend's own independent reshuffle cadence -- decoupled from
-  # TICK_SECONDS, randomized dwell per visit, see AGENT.md. Kept varied
-  # per backend even though personality is gone, purely so the 5
-  # backends' reshuffles stay decorrelated in time from each other rather
-  # than ever coinciding.
+  # DEGRADATION_OFFSET_MIN_MS/MAX_MS -- unchanged, still shared across all
+  # 5 backends (same distribution; only the independent per-backend
+  # *draw* differs). Each backend independently redraws a signed offset
+  # (negative = currently faster than baseline, positive = slower) at
+  # every dwell transition -- asymmetric range on purpose, more physical
+  # room to get worse than to get better.
+  #
+  # DEGRADATION_MEAN_DWELL_SECONDS (per-backend) controls each backend's
+  # own independent reshuffle cadence -- decoupled from TICK_SECONDS,
+  # randomized dwell per visit, see AGENT.md.
   backend-1:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
-      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      LATENCY_MIN_MS: "10"
+      LATENCY_MAX_MS: "20"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
@@ -44,8 +49,8 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
-      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      LATENCY_MIN_MS: "5"
+      LATENCY_MAX_MS: "40"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
@@ -59,8 +64,8 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
-      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      LATENCY_MIN_MS: "12"
+      LATENCY_MAX_MS: "18"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
@@ -74,8 +79,8 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
-      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      LATENCY_MIN_MS: "15"
+      LATENCY_MAX_MS: "60"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
@@ -89,8 +94,8 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
-      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      LATENCY_MIN_MS: "30"
+      LATENCY_MAX_MS: "80"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-120}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
