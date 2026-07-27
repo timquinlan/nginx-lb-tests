@@ -21,6 +21,15 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+# analysis/ is copied to /app/analysis in the image (see controller/
+# Dockerfile) but isn't on sys.path by default since this script's own
+# directory (/app) is what Python adds automatically. analysis/ is kept
+# import-independent from controller/ (see analysis/log_reader.py) so it
+# also works standalone from the host -- this is the one place that
+# bridges the two for the automatic end-of-run hook.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "analysis"))
+import analyze
+
 from common import (
     log,
     now_ms,
@@ -98,9 +107,16 @@ def write_run_record(record):
         f.write(json.dumps(record) + "\n")
 
 
-def invoke_analysis_stub(run_index):
-    # Phase 4 wires this up to analysis/ scripts and prints a real summary.
-    print(f"[traffic_generator] run {run_index} complete. Phase 4 analysis not implemented yet (stub).")
+def invoke_analysis(run_index):
+    """End-of-run hook: analyzes the run that just finished and prints its
+    summary/warnings/chart paths to stdout. Analysis failures are logged,
+    not raised -- the traffic-generator run itself already succeeded and
+    its record is already in runs.log by this point, so a broken chart
+    shouldn't be reported as a failed run."""
+    try:
+        analyze.run_analysis(logs_dir=LOG_DIR, run_index=run_index)
+    except Exception as e:
+        log("traffic_generator", f"Phase 4 analysis failed for run {run_index}: {e}")
 
 
 def run(tick_seconds, rps, duration_ticks):
@@ -167,7 +183,7 @@ def run(tick_seconds, rps, duration_ticks):
     }
     write_run_record(record)
     log("traffic_generator", f"run {run_index} finished, wrote record to {RUNS_LOG_PATH}")
-    invoke_analysis_stub(run_index)
+    invoke_analysis(run_index)
 
 
 def main():

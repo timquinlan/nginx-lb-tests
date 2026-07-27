@@ -61,6 +61,7 @@ Everything is written to plain host directories (bind mounts, not opaque Docker 
 - **`./logs/{rr,aco,mc}.access.log`** -- the experimental evidence. One line per proxied request: `timestamp(ms) | request_path | backend | response_time | header_time(TTFB) | http_status | degradation_state`.
 - **`./logs/{aco,mc}.weights.csv`** -- the applied integer weight per backend, per sampling window, wide-form (`timestamp_ms, timestamp_iso, backend-1, backend-2, ...`) so a line chart (x=time, y=weight, one line per backend) is a direct plot away.
 - **`./logs/runs.log`** -- one JSON line per traffic-generator run: start/end timestamps, tick, rps, planned vs. actual duration, and each algorithm's config-change count. Multiple runs append to the same log files; `runs.log`'s timestamps are how an individual run gets isolated later.
+- **`./logs/analysis/`** -- Phase 4's output for each analyzed run: PNG charts (TTFB over time with a degradation overlay, per-backend selection frequency) and `runN_stats_report.txt`, a TTFB mean/median/p90/p95/p99 comparison of `aco`/`mc` against the `rr` control, including a Mann-Whitney U p-value and bootstrap confidence intervals -- not just deltas, an actual significance test. See `analysis/README.md`.
 - **`./nginx-conf/`** -- the generated NGINX confs themselves, if you want to see exactly what's live at any moment.
 
 ## Project status
@@ -68,7 +69,7 @@ Everything is written to plain host directories (bind mounts, not opaque Docker 
 - **Phase 1** (scaffolding: validation, config generation, priming, traffic generator, plumbing) -- done.
 - **Phase 2** (ACO) -- done.
 - **Phase 3** (Markov Chain, all three paths running simultaneously) -- done.
-- **Phase 4** (analysis tooling in `analysis/`) -- not yet built.
+- **Phase 4** (analysis tooling in `analysis/`) -- done.
 
 ## Quick start
 
@@ -86,6 +87,14 @@ docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
 Run it again (with different `--tick`/`--rps`/`--duration`) as many times as you like against the same container -- each run appends its own record to `runs.log`. See `AGENT.md` for why setup and traffic generation are split this way.
 
 Run these one at a time, not concurrently -- two overlapping `traffic_generator.py` invocations would collide on the same run index and mix their traffic together in the same access logs with no way to tell them apart afterward.
+
+Each run automatically triggers analysis at the end -- a stdout summary table, PNG charts, and a text stats report (TTFB mean/median/p90/p95/p99 for `aco`/`mc` vs. the `rr` control, with a Mann-Whitney p-value and bootstrap confidence intervals -- see `analysis/README.md`), all under `./logs/analysis/`. To analyze a run again later, or a different run than the most recent one:
+
+```sh
+python3 analysis/analyze.py --run 3          # from the host, against ./logs
+```
+
+**On short smoke-test runs, expect the stats report to say "not statistically significant" everywhere** -- a few thousand requests over tens of seconds usually isn't enough to separate real algorithm differences from noise, especially against backends with deliberately overlapping latency ranges. That's the correct, expected answer at this scale, not a sign anything is broken -- see `analysis/README.md`.
 
 Points at external backends instead of building local ones:
 

@@ -13,6 +13,7 @@ Phase 3 swaps in the real Markov module for /mc -- both dynamic algorithms
 now run their real math simultaneously.
 """
 import http.client
+import json
 import os
 import sys
 import threading
@@ -33,6 +34,18 @@ import config_writer
 import validate_backends
 
 PROBE_TIMEOUT_SECONDS = 5
+
+# Phase 4 needs the same ip:port -> host attribution sampler.py already
+# builds every window (see resolve_ip_to_host_map / AGENT.md's
+# "$upstream_addr gotcha"), but analysis is meant to be runnable directly
+# from the host machine against the bind-mounted ./logs directory, where
+# Docker's embedded DNS (service names like "backend-1") isn't reachable.
+# Rather than require analysis to have live DNS access -- which also
+# wouldn't reflect the exact resolution NGINX actually used at request
+# time -- the sampling loop persists its own resolved mapping to a small
+# JSON snapshot on every window, so Phase 4 reads the *actual* mapping
+# used instead of re-deriving (and potentially mismatching) it.
+IP_TO_HOST_PATH = os.path.join(LOG_DIR, "ip_to_host.json")
 
 ALGORITHMS = {
     "aco": AntColonyOptimization(),
@@ -60,6 +73,31 @@ def direct_probe(host, port=BACKEND_PORT, timeout=PROBE_TIMEOUT_SECONDS):
 
 def probe_all_backends(hosts):
     return {host: direct_probe(host) for host in hosts}
+
+
+def write_ip_to_host_snapshot(hosts):
+    """Resolve and persist the ip:port -> host map (see IP_TO_HOST_PATH).
+    Re-resolving and overwriting on every call keeps it fresh the same way
+    resolve_ip_to_host_map's own callers already re-resolve every sampling
+    window; the atomic replace matches config_writer._write_state's pattern
+    so a reader never sees a partially-written file.
+
+    Both dynamic algorithms' sampling_loop threads call this independently,
+    every window (see AGENT.md) -- the tmp filename must be unique per
+    caller, not just per target file, or two threads racing this in the
+    same window can steal each other's tmp file: thread A writes tmp,
+    thread B (same shared tmp path) overwrites/renames it away, then
+    thread A's os.replace() raises FileNotFoundError on a tmp file that no
+    longer exists. That exception is fatal to a daemon thread (uncaught ->
+    thread dies silently, no further weight updates from it ever again) --
+    caught live via a real dual-sampling-loop run during Phase 4
+    verification, not theoretical."""
+    mapping = resolve_ip_to_host_map(hosts)
+    tmp_path = f"{IP_TO_HOST_PATH}.tmp.{os.getpid()}.{threading.get_ident()}"
+    with open(tmp_path, "w") as f:
+        json.dump(mapping, f)
+    os.replace(tmp_path, IP_TO_HOST_PATH)
+    return mapping
 
 
 def access_log_path(algo_name):
@@ -119,6 +157,7 @@ def fill_sparse_observations(observations, hosts):
 
 
 def run_priming(hosts):
+    write_ip_to_host_snapshot(hosts)
     log("sampler", f"priming: probing {len(hosts)} backend(s) directly")
     observations = probe_all_backends(hosts)
     log("sampler", f"priming observations (ms): {observations}")
@@ -137,7 +176,7 @@ def sampling_loop(algo_name, hosts):
     time.sleep(TICK_SECONDS)
     while True:
         window_start = time.monotonic()
-        ip_to_host = resolve_ip_to_host_map(hosts)
+        ip_to_host = write_ip_to_host_snapshot(hosts)
         lines = read_new_window_lines(algo_name)
         observations = parse_window_observations(lines, ip_to_host)
         observations = fill_sparse_observations(observations, hosts)
