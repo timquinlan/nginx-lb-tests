@@ -197,7 +197,19 @@ def read_weights_csv(logs_dir, algo, start_ts_ms, end_ts_ms):
     """Returns rows (list of {backend: int_weight}) within the run window,
     in file order. rr has no weights file (static, unweighted -- see
     AGENT.md); callers should treat that as "not applicable", not "zero
-    changes", since rr was never eligible to change in the first place."""
+    changes", since rr was never eligible to change in the first place.
+
+    Rows written under a different backend pool than the file's own
+    header (see AGENT.md's "backend pool changed mid-file" tradeoff --
+    the header is fixed at first-write time, but a later container
+    restart against a resized upstream-hosts.txt keeps appending shorter/
+    longer rows to the same file) parse as malformed here -- DictReader
+    fills missing trailing columns with None, which int() rejects. Such
+    rows are skipped rather than raising, since this is an accepted,
+    documented tradeoff (clear/rename ./logs before a genuinely different
+    backend pool -- not always followed in practice, confirmed live when
+    this was hit), not a reason to crash the whole analysis run over a
+    secondary (change-count) stat."""
     path = os.path.join(logs_dir, f"{algo}{WEIGHTS_CSV_SUFFIX}")
     if not os.path.exists(path):
         return None
@@ -209,7 +221,10 @@ def read_weights_csv(logs_dir, algo, start_ts_ms, end_ts_ms):
             ts_ms = int(row["timestamp_ms"])
             if ts_ms < start_ts_ms or ts_ms > end_ts_ms:
                 continue
-            rows.append({b: int(row[b]) for b in backend_cols})
+            try:
+                rows.append({b: int(row[b]) for b in backend_cols})
+            except (TypeError, ValueError):
+                continue
     return rows
 
 
@@ -274,38 +289,6 @@ def ttfb_stats(values):
     stats = {name: _stat_from_sorted(ordered, name) for name in STAT_NAMES}
     stats["n"] = len(ordered)
     return stats
-
-
-# LB-to-upstream TTFB benchmark thresholds (dynamic-content column -- this
-# project's backends simulate application logic, not static/cached
-# assets), a much closer match to what $upstream_header_time actually
-# measures than generic end-to-end browser TTFB guidance (e.g. web.dev's):
-# LB-to-backend within the same datacenter/VPC has no client network RTT,
-# TLS handshake, or CDN/edge overhead to strip out in the first place, so
-# these bands are directly comparable to our numbers without the
-# proxy/upper-bound caveat an end-to-end source would need. Source table:
-# elite <50ms, good 50-150ms, acceptable 150-300ms, poor >500ms for
-# dynamic content -- the 300-500ms gap the source leaves undefined is
-# folded into "acceptable" here (the more conservative reading) rather
-# than left as an unclassifiable band.
-TTFB_ELITE_MAX_MS = 50.0
-TTFB_GOOD_MAX_MS = 150.0
-TTFB_ACCEPTABLE_MAX_MS = 500.0
-
-
-def ttfb_band_fractions(values):
-    """Fraction of observations in each LB-to-upstream TTFB band -- see
-    the threshold source/rationale above. Returns {"elite": frac, "good":
-    frac, "acceptable": frac, "poor": frac} (each in [0, 1], summing to 1)
-    or None for an empty sample."""
-    if not values:
-        return None
-    n = len(values)
-    elite = sum(1 for v in values if v <= TTFB_ELITE_MAX_MS)
-    good = sum(1 for v in values if TTFB_ELITE_MAX_MS < v <= TTFB_GOOD_MAX_MS)
-    acceptable = sum(1 for v in values if TTFB_GOOD_MAX_MS < v <= TTFB_ACCEPTABLE_MAX_MS)
-    poor = n - elite - good - acceptable
-    return {"elite": elite / n, "good": good / n, "acceptable": acceptable / n, "poor": poor / n}
 
 
 def capped_sample(values, max_n, rng):

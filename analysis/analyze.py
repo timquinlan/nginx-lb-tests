@@ -100,7 +100,6 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
         "window_means": window_means,
         "header_times": header_times,
         "stats": common.ttfb_stats(header_times),
-        "band_fractions": common.ttfb_band_fractions(header_times),
         "best_window": best_window,
         "worst_window": worst_window,
         "change_count": change_count,
@@ -270,30 +269,6 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
             lines.append(
                 f"  {i}. {algo:<10} mean={stats['mean']:>8.1f}ms  median={stats['median']:>8.1f}ms  "
                 f"p95={stats['p95']:>8.1f}ms{tag}"
-            )
-    lines.append("")
-
-    lines.append(
-        f"--- LB-to-upstream TTFB bands (elite <={common.TTFB_ELITE_MAX_MS:.0f}ms, good "
-        f"<={common.TTFB_GOOD_MAX_MS:.0f}ms, acceptable <={common.TTFB_ACCEPTABLE_MAX_MS:.0f}ms, "
-        f"poor above) ---"
-    )
-    lines.append(
-        "Dynamic-content LB-to-upstream benchmark, not generic end-to-end browser TTFB -- "
-        "directly comparable to $upstream_header_time since both exclude client network/TLS "
-        "overhead by construction (see analysis/log_reader.py)."
-    )
-    band_header = f"{'algo':<6} {'elite':>9} {'good':>9} {'acceptable':>12} {'poor':>9}"
-    lines.append(band_header)
-    lines.append("-" * len(band_header))
-    for algo, data in per_algo.items():
-        bands = data["band_fractions"]
-        if bands is None:
-            lines.append(f"{algo:<6} {'n/a':>9} {'n/a':>9} {'n/a':>12} {'n/a':>9}")
-        else:
-            lines.append(
-                f"{algo:<6} {bands['elite']:>8.1%} {bands['good']:>8.1%} "
-                f"{bands['acceptable']:>11.1%} {bands['poor']:>8.1%}"
             )
     lines.append("")
 
