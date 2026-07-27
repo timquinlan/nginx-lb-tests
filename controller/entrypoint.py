@@ -27,6 +27,10 @@ import sampler
 
 NGINX_STARTUP_GRACE_SECONDS = 1.0
 NGINX_MAIN_CONF_PATH = "/etc/nginx/nginx.conf"
+# See pin_worker_processes() below -- moving off 1 without `zone`
+# directives on the upstream blocks reintroduces the per-worker skew
+# artifact that pinning to 1 originally fixed. Not yet paired with zone.
+WORKER_PROCESSES_COUNT = 4
 
 
 def pin_worker_processes():
@@ -38,27 +42,28 @@ def pin_worker_processes():
     # actually crashed the container the first time this was tried -- see
     # AGENT.md). So this patches that one line in place instead.
     #
-    # Pinned to 1 rather than left at the image's default `auto`: NGINX's
-    # round-robin (weighted or not) state is kept per-worker, so with
-    # worker_processes=auto (one per CPU core) each worker round-robins
-    # independently and the *aggregate* distribution across all of them can
-    # look meaningfully skewed even though every individual worker is
-    # balancing correctly -- purely a multi-process artifact, not signal
-    # from any algorithm. Since this project's stated goal is a
-    # reproducible, precisely interpretable comparison between algorithms
-    # (not raw throughput), a single worker trades away multi-core
-    # concurrency for a clean, singular round-robin/weighted state to
-    # measure against. Revisit if a future phase needs the throughput
-    # headroom.
+    # Pinned to 4 rather than left at the image's default `auto` (one per
+    # CPU core, uncapped) or the earlier value of 1. NGINX's round-robin
+    # (weighted or not), least_conn, and random-two state are all kept
+    # per-worker *unless* the owning upstream block has a `zone`
+    # directive -- without one, more workers means more independent
+    # round-robin/connection-count cycles, and the *aggregate* distribution
+    # across them skews harder as worker count goes up (confirmed live,
+    # see AGENT.md: 2 workers vs. 6 workers vs. 6 workers+zone on /rr).
+    # WORKER_PROCESSES_COUNT going to 4 here is step one of that move --
+    # `zone` directives on the upstream blocks are the other half and are
+    # not yet added (see AGENT.md/memory), so every path currently
+    # inherits the same aggregate-skew artifact the single-worker pin was
+    # originally introduced to avoid, until that follow-up lands.
     with open(NGINX_MAIN_CONF_PATH) as f:
         content = f.read()
-    patched, count = re.subn(r"worker_processes\s+\S+;", "worker_processes 1;", content, count=1)
+    patched, count = re.subn(r"worker_processes\s+\S+;", f"worker_processes {WORKER_PROCESSES_COUNT};", content, count=1)
     if count == 0:
         log("entrypoint", f"WARNING: no worker_processes directive found in {NGINX_MAIN_CONF_PATH}, leaving as-is")
         return
     with open(NGINX_MAIN_CONF_PATH, "w") as f:
         f.write(patched)
-    log("entrypoint", f"pinned worker_processes to 1 in {NGINX_MAIN_CONF_PATH}")
+    log("entrypoint", f"pinned worker_processes to {WORKER_PROCESSES_COUNT} in {NGINX_MAIN_CONF_PATH}")
 
 
 def start_nginx():

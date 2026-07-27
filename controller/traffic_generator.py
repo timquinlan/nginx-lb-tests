@@ -202,12 +202,14 @@ def main():
             "different unit than the sampling cadence underneath -- see AGENT.md."
         ),
     )
-    # 250rps/path (~750 aggregate across /rr, /aco, /mc) approximates a
-    # sustained ~500M-hits/month production load -- see AGENT.md. Comfortably
-    # inside this machine's demonstrated ~650rps/path ceiling (README,
-    # "Choosing --rps"), so this is meant to be a realistic sustained
-    # default now, not just a smoke-test placeholder.
-    parser.add_argument("--rps", type=float, default=250, help="requests per second, per algorithm path (default 250)")
+    # Lowered from 250 to 125rps/path when /random, /random2, and
+    # /leastconn were added alongside /rr/aco/mc: 6 paths at the old
+    # 250rps/path default would have pushed aggregate load to ~1500rps,
+    # roughly double what the ~650rps/path single-core ceiling (README,
+    # "Choosing --rps") was measured against with only 3 paths. 125rps/path
+    # x 6 paths keeps aggregate load (~750rps) at the same level the old
+    # default was actually validated at -- see AGENT.md.
+    parser.add_argument("--rps", type=float, default=125, help="requests per second, per algorithm path (default 125)")
     parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
     args = parser.parse_args()
 

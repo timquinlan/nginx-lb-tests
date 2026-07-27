@@ -29,6 +29,7 @@ from common import (
     NGINX_EXPERIMENT_PORT,
     DYNAMIC_ALGO_NAMES,
     STATIC_ALGO_NAMES,
+    STATIC_ALGO_METHODS,
     ALL_ALGO_NAMES,
     EQUAL_WEIGHT_PLACEHOLDER,
 )
@@ -105,8 +106,10 @@ def main():
 
     for algo in STATIC_ALGO_NAMES:
         path = os.path.join(CONF_DIR, f"{algo}.upstream.conf")
-        write_upstream_conf(path, algo, hosts, BACKEND_PORT, weights=None)
-        log("generate_config", f"wrote {path} (unweighted, static)")
+        method = STATIC_ALGO_METHODS.get(algo)
+        write_upstream_conf(path, algo, hosts, BACKEND_PORT, weights=None, method=method)
+        method_desc = f"method={method!r}" if method else "unweighted round robin"
+        log("generate_config", f"wrote {path} (static, {method_desc})")
 
     for algo in DYNAMIC_ALGO_NAMES:
         path = os.path.join(CONF_DIR, f"{algo}.upstream.conf")

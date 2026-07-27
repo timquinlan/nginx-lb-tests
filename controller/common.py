@@ -48,9 +48,31 @@ TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "60"))
 # Round robin is static/unweighted and has no controller module (see
 # AGENT.md). ACO and MC are the paths whose upstream weights the sampler
 # rewrites every sampling window.
-STATIC_ALGO_NAMES = ("rr",)
+#
+# random/random2/leastconn are also static, same as rr: NGINX's own
+# upstream-block method directive (see STATIC_ALGO_METHODS below) does
+# the selection internally, every request -- no weight computation, no
+# sampling loop, no weights.csv, no change counter. They exist to compare
+# against this project's adaptive algorithms (aco/mc) the same way rr
+# does, just with a different built-in NGINX mechanism driving selection.
+# See AGENT.md for why "random two least_conn" isn't a fourth, separate
+# path (it's mechanistically identical to "random two" in open-source
+# NGINX) and plain least_conn was added in its place instead.
+STATIC_ALGO_NAMES = ("rr", "random", "random2", "leastconn")
 DYNAMIC_ALGO_NAMES = ("aco", "mc")
 ALL_ALGO_NAMES = STATIC_ALGO_NAMES + DYNAMIC_ALGO_NAMES
+
+# NGINX upstream-block method directive per static algorithm, written as
+# the first line inside the block (see nginx/upstream_conf.py). None means
+# no directive at all -- NGINX's own default upstream method is already
+# plain round robin, so omitting the line reproduces rr's historical
+# unweighted conf byte-for-byte.
+STATIC_ALGO_METHODS = {
+    "rr": None,
+    "random": "random",
+    "random2": "random two",
+    "leastconn": "least_conn",
+}
 
 MIN_WEIGHT = 1
 MAX_WEIGHT = 100
