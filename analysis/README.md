@@ -12,7 +12,7 @@ mounts, not named volumes").
 one line per proxied request:
 
 ```
-$msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time | $status | $sent_http_x_degradation_state
+$msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time | $status | $sent_http_x_degradation_offset_ms
 ```
 
 - `$msec` and the two response-time fields are **seconds with a
@@ -20,6 +20,12 @@ $msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time 
   integer milliseconds, despite field names elsewhere using an `_ms`
   suffix for readability. `analysis/log_reader.py` converts these to
   integer milliseconds on read.
+- The last field is a **signed float already in ms** (not
+  seconds-with-decimal like the two above) — negative means that backend
+  was currently faster than its own baseline at request time, positive
+  means slower. Each backend drifts independently; there's no shared
+  "state" across backends anymore — see `AGENT.md`, "backends share a
+  baseline, drift independently."
 - `$upstream_addr` is a **resolved `ip:port`, never the original
   hostname**. `ip_to_host.json` (written by `controller/sampler.py`,
   refreshed every sampling window) maps it back to the name from
@@ -128,10 +134,11 @@ Compose volume was needed for this.
   `start_ts_ms`, so re-running the report against the same run reproduces
   the same CIs.
 - **`runN_ttfb_over_time.png`** — one line per algorithm, mean TTFB per
-  analysis window, with a translucent red area overlay showing what
-  fraction of *all* requests that window hit a backend with
-  `X-Degradation-State != 0` (pooled across algorithms — degradation is a
-  property of the backend, not of whichever algorithm routed to it).
+  analysis window, with a translucent red area overlay showing the mean
+  `X-Degradation-Offset-Ms` across *all* requests that window (pooled
+  across algorithms — degradation is a property of the backend, not of
+  whichever algorithm routed to it), signed: positive means the pool was
+  net slower than baseline that window, negative means net faster.
 - **`runN_{algo}_selection_frequency.png`** — one chart per algorithm,
   one line per backend, request count per analysis window. `rr`'s should
   look roughly flat/uniform — that's the sanity-check baseline the other

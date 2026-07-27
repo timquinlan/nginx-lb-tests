@@ -69,7 +69,7 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
     records = common.parse_access_log(access_log_path, start_ts_ms, end_ts_ms, ip_to_host)
     header_times = [r["header_time_ms"] for r in records if r["header_time_ms"] is not None]
 
-    buckets = common.bucket_by_window(records, window_seconds, start_ts_ms)
+    buckets = common.bucket_by_window(records, window_seconds, start_ts_ms, end_ts_ms)
     window_means = {}
     for idx, recs in buckets.items():
         times = [r["header_time_ms"] for r in recs if r["header_time_ms"] is not None]
@@ -89,6 +89,7 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
         "window_means": window_means,
         "header_times": header_times,
         "stats": common.ttfb_stats(header_times),
+        "band_fractions": common.ttfb_band_fractions(header_times),
         "best_window": best_window,
         "worst_window": worst_window,
         "change_count": change_count,
@@ -96,23 +97,30 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
     }
 
 
-def degradation_fraction_by_window(per_algo):
+def degradation_offset_by_window(per_algo):
     """Pools records across every algorithm -- degradation is a property of
     the backend, not of whichever algorithm happened to route to it, so
-    pooling gives one algorithm-agnostic view of how much of the pool was
-    degraded at any point in the run, regardless of which (if any) access
-    log has an rr-style baseline to read it from."""
+    pooling gives one algorithm-agnostic view of the pool's overall
+    condition at any point in the run, regardless of which (if any) access
+    log has an rr-style baseline to read it from.
+
+    Returns mean X-Degradation-Offset-Ms per window (signed: positive =
+    pool net slower than baseline, negative = net faster) -- not a
+    percentage. Under the old fixed 0/1/2 staircase, "% of requests in a
+    non-zero state" was a meaningful summary; now that each backend
+    independently drifts along a continuous signed scale (see AGENT.md,
+    "backends share a baseline, drift independently"), the mean offset is
+    the analogous continuous-valued summary."""
     combined = {}
     for data in per_algo.values():
         for idx, recs in data["buckets"].items():
             combined.setdefault(idx, []).extend(recs)
-    fractions = {}
+    means = {}
     for idx, recs in combined.items():
-        known = [r for r in recs if r["degradation_state"] is not None]
+        known = [r["degradation_offset_ms"] for r in recs if r["degradation_offset_ms"] is not None]
         if known:
-            degraded = sum(1 for r in known if r["degradation_state"] != "0")
-            fractions[idx] = degraded / len(known)
-    return fractions
+            means[idx] = sum(known) / len(known)
+    return means
 
 
 def format_window(idx, window_means, window_seconds):
@@ -216,6 +224,10 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
     lines.append(f"=== Run {run['run_index']} TTFB statistical comparison (ms) ===")
     lines.append(f"control: {CONTROL_ALGO}")
     lines.append(f"window:  {ms_to_iso(run['start_ts_ms'])}  ->  {ms_to_iso(run['end_ts_ms'])}")
+    lines.append(
+        f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
+        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s"
+    )
     lines.append("")
 
     lines.append("--- point estimates (full data) ---")
@@ -224,6 +236,30 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
     lines.append("-" * len(header))
     for algo, data in per_algo.items():
         lines.append(format_stats_row(algo, data["stats"]))
+    lines.append("")
+
+    lines.append(
+        f"--- LB-to-upstream TTFB bands (elite <={common.TTFB_ELITE_MAX_MS:.0f}ms, good "
+        f"<={common.TTFB_GOOD_MAX_MS:.0f}ms, acceptable <={common.TTFB_ACCEPTABLE_MAX_MS:.0f}ms, "
+        f"poor above) ---"
+    )
+    lines.append(
+        "Dynamic-content LB-to-upstream benchmark, not generic end-to-end browser TTFB -- "
+        "directly comparable to $upstream_header_time since both exclude client network/TLS "
+        "overhead by construction (see analysis/log_reader.py)."
+    )
+    band_header = f"{'algo':<6} {'elite':>9} {'good':>9} {'acceptable':>12} {'poor':>9}"
+    lines.append(band_header)
+    lines.append("-" * len(band_header))
+    for algo, data in per_algo.items():
+        bands = data["band_fractions"]
+        if bands is None:
+            lines.append(f"{algo:<6} {'n/a':>9} {'n/a':>9} {'n/a':>12} {'n/a':>9}")
+        else:
+            lines.append(
+                f"{algo:<6} {bands['elite']:>8.1%} {bands['good']:>8.1%} "
+                f"{bands['acceptable']:>11.1%} {bands['poor']:>8.1%}"
+            )
     lines.append("")
 
     control_data = per_algo.get(CONTROL_ALGO)
@@ -285,21 +321,21 @@ def plot_ttfb_over_time(per_algo, run, window_seconds, out_dir):
         idxs = sorted(data["window_means"])
         xs = [idx * window_seconds for idx in idxs]
         ys = [data["window_means"][idx] for idx in idxs]
-        ax1.plot(xs, ys, marker="o", label=algo)
+        ax1.plot(xs, ys, label=algo)
     ax1.set_xlabel(f"seconds since run start (window={window_seconds:.0f}s)")
     ax1.set_ylabel("mean TTFB (ms)")
     ax1.set_title(f"Run {run['run_index']}: TTFB over time")
     ax1.legend(loc="upper left")
 
-    degradation = degradation_fraction_by_window(per_algo)
+    degradation = degradation_offset_by_window(per_algo)
     if degradation:
         ax2 = ax1.twinx()
         idxs = sorted(degradation)
         xs = [idx * window_seconds for idx in idxs]
-        ys = [degradation[idx] * 100 for idx in idxs]
-        ax2.fill_between(xs, ys, step="mid", alpha=0.15, color="red")
-        ax2.set_ylabel("% requests hitting a degraded backend (any state > 0)")
-        ax2.set_ylim(0, 100)
+        ys = [degradation[idx] for idx in idxs]
+        ax2.fill_between(xs, ys, 0, step="mid", alpha=0.15, color="red")
+        ax2.axhline(0, color="red", linewidth=0.5, alpha=0.4)
+        ax2.set_ylabel("mean degradation offset, pool-wide (ms; + slower, - faster)")
 
     path = os.path.join(out_dir, f"run{run['run_index']}_ttfb_over_time.png")
     fig.tight_layout()
@@ -308,7 +344,27 @@ def plot_ttfb_over_time(per_algo, run, window_seconds, out_dir):
     return path
 
 
-def plot_selection_frequency(algo, data, run, window_seconds, out_dir):
+def max_selection_frequency(per_algo):
+    """Highest per-window, per-backend request count across every
+    algorithm in the run -- used so all of a run's selection-frequency
+    charts share one y-axis (see plot_selection_frequency). Without this,
+    rr's chart (tightly clustered around its equal share, e.g. 495-515)
+    auto-scales to its own narrow range and reads as far noisier/more
+    volatile than aco/mc's charts (which legitimately span a much wider
+    range, e.g. 0-600) purely because of independent axis scaling -- an
+    apples-to-oranges visual comparison, not a real difference."""
+    peak = 0
+    for data in per_algo.values():
+        for recs in data["buckets"].values():
+            counts = {}
+            for r in recs:
+                counts[r["host"]] = counts.get(r["host"], 0) + 1
+            if counts:
+                peak = max(peak, max(counts.values()))
+    return peak
+
+
+def plot_selection_frequency(algo, data, run, window_seconds, out_dir, y_max):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -321,10 +377,11 @@ def plot_selection_frequency(algo, data, run, window_seconds, out_dir):
     for host in hosts:
         xs = [idx * window_seconds for idx in idxs]
         ys = [sum(1 for r in buckets[idx] if r["host"] == host) for idx in idxs]
-        ax.plot(xs, ys, marker="o", label=host)
+        ax.plot(xs, ys, label=host)
     ax.set_xlabel(f"seconds since run start (window={window_seconds:.0f}s)")
     ax.set_ylabel("requests routed to backend, per window")
     ax.set_title(f"Run {run['run_index']}: {algo} backend selection frequency")
+    ax.set_ylim(0, y_max * 1.05 if y_max else None)  # 5% headroom so a peak isn't clipped by the axis edge
     ax.legend(loc="upper left", fontsize="small")
 
     path = os.path.join(out_dir, f"run{run['run_index']}_{algo}_selection_frequency.png")
@@ -370,8 +427,9 @@ def run_analysis(logs_dir=None, out_dir=None, run_index=None, start_ts_ms=None, 
     )
 
     chart_paths = [plot_ttfb_over_time(per_algo, run, window_seconds, out_dir)]
+    selection_freq_y_max = max_selection_frequency(per_algo)
     for algo in algos:
-        chart_paths.append(plot_selection_frequency(algo, per_algo[algo], run, window_seconds, out_dir))
+        chart_paths.append(plot_selection_frequency(algo, per_algo[algo], run, window_seconds, out_dir, selection_freq_y_max))
 
     print(f"\nstats report written to {stats_report_path}")
     print(f"charts written to {out_dir}:")

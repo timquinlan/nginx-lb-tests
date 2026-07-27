@@ -194,13 +194,20 @@ def main():
         default=TICK_SECONDS,
         help=(
             "base tick unit in seconds -- defaults to this container's own TICK_SECONDS "
-            f"env var (currently {TICK_SECONDS}s), which is also what the sampling loops "
-            "and backend degradation cycles are actually running on. Only override this "
-            "if you deliberately want this run's status-line/duration accounting to use a "
+            f"env var (currently {TICK_SECONDS}s), which is also the sampling window the "
+            "algorithms actually run on (backend degradation timing is a separate, "
+            "independent config -- DEGRADATION_MEAN_DWELL_SECONDS -- since AGENT.md's "
+            "'degradation timing decoupled and randomized'). Only override this if you "
+            "deliberately want this run's status-line/duration accounting to use a "
             "different unit than the sampling cadence underneath -- see AGENT.md."
         ),
     )
-    parser.add_argument("--rps", type=float, default=5, help="requests per second, per algorithm path (default 5)")
+    # 250rps/path (~750 aggregate across /rr, /aco, /mc) approximates a
+    # sustained ~500M-hits/month production load -- see AGENT.md. Comfortably
+    # inside this machine's demonstrated ~650rps/path ceiling (README,
+    # "Choosing --rps"), so this is meant to be a realistic sustained
+    # default now, not just a smoke-test placeholder.
+    parser.add_argument("--rps", type=float, default=250, help="requests per second, per algorithm path (default 250)")
     parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
     args = parser.parse_args()
 

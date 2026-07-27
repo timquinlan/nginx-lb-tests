@@ -1,6 +1,6 @@
 # upstream-rl
 
-A load balancing science experiment: it compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under identical, programmatically-controlled, degrading latency conditions. The initial algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against stock, unweighted NGINX round robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
+A load balancing science experiment of sorts: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under identical, degrading and improving latency conditions. The initial algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against stock, unweighted NGINX round robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
 
 The primary contribution isn't the experiment result itself (which algorithm "wins") -- it's the experimentation *methodology*: a reproducible framework for measuring performance differences between upstream-selection algorithms, with analysis tooling specific enough to work out of the box against this project's log format but simple enough to adapt to a different algorithm or log schema. Longer-term framing: a paper/talk on ACO-inspired load balancing for edge devices that operate without centralized orchestration -- ant colony behavior is inherently decentralized and locally-informed, which is a natural fit for that setting. 
 
@@ -30,29 +30,42 @@ In testing, this contrast shows up concretely: given the *identical* underlying 
 
 ## Backend pool (default, full mode)
 
-Defined in `upstream-hosts.txt` (the single source of truth -- nothing in the codebase hardcodes a backend count; scaling to 10 or 25 is just adding lines). The default 5 backends have deliberately overlapping latency ranges, so no single one is always best:
+Defined in `upstream-hosts.txt` (the single source of truth -- nothing in the codebase hardcodes a backend count; scaling to 10 or 25 is just adding lines). **No backend has a fixed "personality" anymore** -- all 5 share the same `LATENCY_MIN_MS`/`MAX_MS` range (default 10-20ms, `backend-1`'s original range -- kept because it happens to match "Standard 5G (MEC Edge)" on a real edge-latency benchmark table). This was a deliberate simplification (see `AGENT.md`, "backends share a baseline, drift independently"): with every backend starting from the same range, the only thing that can ever differentiate one from another is the independent drift below, so any measured algorithm advantage can only come from genuinely tracking that drift -- there's no stable per-backend ranking left to win on instead.
 
-| Backend | Latency range | Character |
+| Backend | Latency range (shared) | Reshuffle cadence (mean dwell) |
 |---|---|---|
-| `backend-1` | 10-20ms | fast, tight, reliable |
-| `backend-2` | 5-40ms | fast floor, high variance |
-| `backend-3` | 12-18ms | fast, very tight |
-| `backend-4` | 15-60ms | medium baseline, moderate variance |
-| `backend-5` | 30-80ms | slow baseline, high variance |
+| `backend-1` | 10-20ms | 40s |
+| `backend-2` | 10-20ms | 80s |
+| `backend-3` | 10-20ms | 40s |
+| `backend-4` | 10-20ms | 80s |
+| `backend-5` | 10-20ms | 120s |
 
-Every backend also runs an internal staircase degradation cycle -- baseline -> +100ms -> +250ms -> reset -- on its own timer, independent of the other backends, reported via an `X-Degradation-State: 0|1|2` response header that lands directly in the access logs.
+Reshuffle cadence (`DEGRADATION_MEAN_DWELL_SECONDS`) stays varied per backend even with personality gone, purely so the 5 backends' reshuffles stay decorrelated in time from each other. Every backend independently drifts on top of the shared range: at every reshuffle (a randomized dwell, not a fixed clock -- decoupled from `--tick`, see below), it draws a fresh **signed offset** (`DEGRADATION_OFFSET_MIN_MS`/`MAX_MS`, shared range across all backends, default -10ms to +250ms -- more room to get worse than to get better) and holds it until the next reshuffle. Negative = currently faster than baseline; positive = slower. This is fully decentralized -- no backend knows about any other's current offset, no shared clock, no coordination -- which makes two independent continuous random draws landing on the exact same value only around a 1-in-900-trillion chance per reshuffle (see `AGENT.md`), and considered a non-issue even if it were far more likely. Reported via `X-Degradation-Offset-Ms` on every response and logged as ground truth to `./logs/degradation-{backend}.log` (`timestamp_ms,offset_ms,dwell_seconds`), since -- with both dwell time and the offset itself randomized -- the schedule can't be computed in advance the way a fixed clock could.
+
+Both `LATENCY_MIN_MS`/`MAX_MS` and `DEGRADATION_OFFSET_MIN_MS`/`MAX_MS` are exposed as single shared overrides (same `${VAR:-default}` pattern as `TICK_SECONDS`) for experimenting with either knob without editing the compose file -- see `AGENT.md`, "backends share a baseline, drift independently," for the full history of this design (it went through a distinct-personality intermediate stage before landing here).
 
 ## Timing model
 
-Everything derives from one base unit, `--tick` (seconds) -- nothing is hardcoded:
+Everything algorithm/traffic-generator-side derives from one base unit, `--tick` (seconds) -- nothing there is hardcoded:
 
-| Parameter | Multiplier | Default (60s tick) | Smoke test (5s tick) |
+| Parameter | Multiplier | Default (10s tick) |
+|---|---|---|
+| Sampling window | 1x | 10s |
+
+**Degradation timing is decoupled from `--tick`, on purpose.** It used to also derive from `--tick` (`DEGRADATION_MULTIPLIER x TICK_SECONDS`), which meant the environment's own dynamics -- not just the algorithms' reaction cadence -- silently rescaled with whatever `--tick` a given run happened to use, and (since the sampling window is also `1x tick`) the two were permanently phase-related for the life of a container. A longer real run wouldn't have diluted that coupling -- it would have just re-measured the same fixed relationship more precisely. Fixed by giving degradation its own timescale (`DEGRADATION_MEAN_DWELL_SECONDS`, per backend, in the table above, overridable as a single shared value the same way `TICK_SECONDS` is) and randomizing each visit's dwell time within it -- see `AGENT.md`, "Backend degradation timing decoupled and randomized," for the full rationale.
+
+## Choosing `--tick`
+
+**Default is 10s**, changed from the original 60s after live-testing four tick values against the same 10-minute, rps=250, `DEGRADATION_MEAN_DWELL_SECONDS` config (40/80/120s means, unscaled) -- a clean dose-response relationship in the dwell-to-window ratio (see `AGENT.md`):
+
+| Tick (window) | Ratio (fastest backend) | `aco` vs `rr` mean | `mc` vs `rr` mean |
 |---|---|---|---|
-| Sampling window | 1x | 60s | 5s |
-| Degradation cycle -- fast backends | 2x | 120s | 10s |
-| Degradation cycle -- medium backends | 4x | 240s | 20s |
-| Degradation cycle -- slow backends | 6x | 360s | 30s |
-| Staircase step duration | 1x | 60s | 5s |
+| 60s | 0.67x | -0.1ms, not significant | +1.5ms, not significant |
+| 20s | 2x | -4.8ms, significant | -20.1ms, significant (aco's median was not) |
+| **10s** | **4x** | **-12.3ms, all 5 stats significant** | **-32.4ms, all 5 stats significant** |
+| 5s | 8x | -26.4ms, all 5 stats significant | -42.2ms, all 5 stats significant |
+
+10s is the smallest tick that gave clean, fully-significant separation for both algorithms at these dwell settings -- 20s already showed cracks (one non-significant stat), 60s collapsed both algorithms into statistical noise (both algorithms end up reacting too slowly relative to how fast the ground truth is already moving). **The ratio, not the absolute tick value, is what actually matters** -- if you change `DEGRADATION_MEAN_DWELL_SECONDS` (or scale up backend count/timing for a different setup), re-derive this table rather than assuming 10s still lands in the safe zone; aim for at least ~4x the sampling window on the fastest backend class as a starting point, and re-test if precision matters.
 
 ## Data & where it lands
 
@@ -81,7 +94,7 @@ This validates backends, generates NGINX config, primes `/aco` and `/mc` with eq
 
 ```sh
 docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
-  python3 traffic_generator.py --tick 5 --rps 5 --duration 4   # smoke test: 5s tick, ~20s total
+  python3 traffic_generator.py --tick 5 --rps 5 --duration 4   # smoke test: 5s tick, ~20s total, --rps explicit (default is now 250, see below)
 ```
 
 Run it again (with different `--tick`/`--rps`/`--duration`) as many times as you like against the same container -- each run appends its own record to `runs.log`. See `AGENT.md` for why setup and traffic generation are split this way.
@@ -107,7 +120,7 @@ Only run one of these two Compose files at a time from this directory -- they sh
 
 ## Choosing `--rps`
 
-`--rps 5` (the default) is a fine smoke test but sends too little traffic per window to reliably exercise every backend -- expect frequent fallback-probe log lines at that rate. `--rps 500` is a good general-purpose starting point for a real run: on a MacBook Air M4 (24GB RAM) it kept the controller container around 75-79% of one core with no errors.
+**Default is 250** (per algorithm path, ~750 aggregate across `/rr`/`/aco`/`/mc`) -- approximates a sustained ~500M-hits/month production load, and is comfortably inside this machine's demonstrated headroom (below). For a quick plumbing smoke test where realism doesn't matter, pass a low `--rps` explicitly (e.g. `--rps 5`) -- at the default 250 you'll rarely see a fallback-probe log line, since every backend gets plenty of real traffic per window even after an algorithm has deprioritized it. `--rps 500` remains a reasonable starting point for pushing toward this machine's ceiling: on a MacBook Air M4 (24GB RAM) it kept the controller container around 75-79% of one core with no errors.
 
 The real ceiling is hardware-dependent, so treat 500 as a starting point, not a hard number -- push `--rps` up and watch `docker stats` alongside the per-algorithm error logs (`./logs/{rr,aco,mc}.error.log`) if you want to find this machine's actual limit:
 

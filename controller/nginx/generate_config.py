@@ -43,10 +43,15 @@ RESOLVER_BY_MODE = {
 }
 
 LOG_FORMAT_NAME = "upstream_rl"
+# Last field used to be $sent_http_x_degradation_state (a 0/1/2 enum, back
+# when backends ran a fixed staircase). Backends now report a continuous,
+# signed offset in ms (X-Degradation-Offset-Ms) -- see AGENT.md, "backends
+# share a baseline, drift independently" -- so the NGINX variable name and
+# log field changed to match.
 LOG_FORMAT_DIRECTIVE = (
     f"log_format {LOG_FORMAT_NAME} "
     "'$msec | $uri | $upstream_addr | $upstream_response_time | "
-    "$upstream_header_time | $status | $sent_http_x_degradation_state';"
+    "$upstream_header_time | $status | $sent_http_x_degradation_offset_ms';"
 )
 
 

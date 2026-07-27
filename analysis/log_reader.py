@@ -120,13 +120,19 @@ def load_ip_to_host_map(logs_dir):
 def parse_access_log(path, start_ts_ms, end_ts_ms, ip_to_host):
     """Parses the pipe-delimited log_format from generate_config.py:
     $msec | $uri | $upstream_addr | $upstream_response_time |
-    $upstream_header_time | $status | $sent_http_x_degradation_state
+    $upstream_header_time | $status | $sent_http_x_degradation_offset_ms
 
     $msec and the two response-time fields are seconds-with-millisecond-
     decimal (e.g. "1721923200.123", "0.014"), never raw integer
     milliseconds, despite the field names elsewhere using an "_ms" suffix
     for readability -- see AGENT.md. Converted to integer ms here so
     everything downstream works in one consistent unit.
+
+    The last field is a signed float in ms (negative = currently faster
+    than that backend's own baseline, positive = slower) -- see AGENT.md,
+    "backends share a baseline, drift independently". It used to be a
+    0/1/2 state enum from a fixed staircase; kept the same log position,
+    changed what it means.
 
     Records outside [start_ts_ms, end_ts_ms] are dropped -- this is the
     run-isolation mechanism: multiple runs append to the same log files,
@@ -141,7 +147,7 @@ def parse_access_log(path, start_ts_ms, end_ts_ms, ip_to_host):
             fields = [x.strip() for x in line.strip().split("|")]
             if len(fields) != 7:
                 continue  # malformed/partial line (e.g. truncated by a concurrent write)
-            msec_str, uri, upstream_addr, response_time_str, header_time_str, status, degradation_state = fields
+            msec_str, uri, upstream_addr, response_time_str, header_time_str, status, degradation_offset_str = fields
             try:
                 ts_ms = round(float(msec_str) * 1000)
             except ValueError:
@@ -155,7 +161,7 @@ def parse_access_log(path, start_ts_ms, end_ts_ms, ip_to_host):
                 "uri": uri,
                 "host": host,
                 "status": status,
-                "degradation_state": degradation_state if degradation_state != "-" else None,
+                "degradation_offset_ms": _parse_signed_float_field(degradation_offset_str),
                 "response_time_ms": _parse_seconds_field(response_time_str),
                 "header_time_ms": _parse_seconds_field(header_time_str),
             }
@@ -169,6 +175,18 @@ def _parse_seconds_field(value):
         return None
     try:
         return float(value) * 1000.0
+    except ValueError:
+        return None
+
+
+def _parse_signed_float_field(value):
+    """For $sent_http_x_degradation_offset_ms -- already in ms (unlike the
+    seconds-with-decimal fields above), and signed (negative = currently
+    faster than baseline)."""
+    if value == "-":
+        return None
+    try:
+        return float(value)
     except ValueError:
         return None
 
@@ -256,6 +274,38 @@ def ttfb_stats(values):
     stats = {name: _stat_from_sorted(ordered, name) for name in STAT_NAMES}
     stats["n"] = len(ordered)
     return stats
+
+
+# LB-to-upstream TTFB benchmark thresholds (dynamic-content column -- this
+# project's backends simulate application logic, not static/cached
+# assets), a much closer match to what $upstream_header_time actually
+# measures than generic end-to-end browser TTFB guidance (e.g. web.dev's):
+# LB-to-backend within the same datacenter/VPC has no client network RTT,
+# TLS handshake, or CDN/edge overhead to strip out in the first place, so
+# these bands are directly comparable to our numbers without the
+# proxy/upper-bound caveat an end-to-end source would need. Source table:
+# elite <50ms, good 50-150ms, acceptable 150-300ms, poor >500ms for
+# dynamic content -- the 300-500ms gap the source leaves undefined is
+# folded into "acceptable" here (the more conservative reading) rather
+# than left as an unclassifiable band.
+TTFB_ELITE_MAX_MS = 50.0
+TTFB_GOOD_MAX_MS = 150.0
+TTFB_ACCEPTABLE_MAX_MS = 500.0
+
+
+def ttfb_band_fractions(values):
+    """Fraction of observations in each LB-to-upstream TTFB band -- see
+    the threshold source/rationale above. Returns {"elite": frac, "good":
+    frac, "acceptable": frac, "poor": frac} (each in [0, 1], summing to 1)
+    or None for an empty sample."""
+    if not values:
+        return None
+    n = len(values)
+    elite = sum(1 for v in values if v <= TTFB_ELITE_MAX_MS)
+    good = sum(1 for v in values if TTFB_ELITE_MAX_MS < v <= TTFB_GOOD_MAX_MS)
+    acceptable = sum(1 for v in values if TTFB_GOOD_MAX_MS < v <= TTFB_ACCEPTABLE_MAX_MS)
+    poor = n - elite - good - acceptable
+    return {"elite": elite / n, "good": good / n, "acceptable": acceptable / n, "poor": poor / n}
 
 
 def capped_sample(values, max_n, rng):
@@ -388,7 +438,7 @@ def mann_whitney_u(sample_a, sample_b):
     return u1, min(1.0, p_value)
 
 
-def bucket_by_window(records, window_seconds, start_ts_ms):
+def bucket_by_window(records, window_seconds, start_ts_ms, end_ts_ms):
     """Groups records into fixed-size time buckets of window_seconds,
     anchored to the run's own start timestamp -- this deliberately mirrors
     the sampling loop's own window boundaries (see sampler.py) so an
@@ -396,10 +446,24 @@ def bucket_by_window(records, window_seconds, start_ts_ms):
     reacting within, as long as --window-seconds matches the container's
     real TICK_SECONDS (see analyze.py and AGENT.md's "--tick and
     TICK_SECONDS are not the same channel" note for the one case this
-    assumption can drift)."""
+    assumption can drift).
+
+    Drops any trailing partial window past the last complete
+    window_seconds-sized interval within [start_ts_ms, end_ts_ms]. A run's
+    actual stop time essentially never lands exactly on a window boundary
+    -- traffic_generator.py's shutdown (draining thread pools, writing
+    runs.log) takes a little time after the last full tick -- so without
+    this, the final bucket is usually a tiny sliver with a fraction of a
+    normal window's observations, which reads as a misleading drop to
+    near-zero on any per-window chart (and could spuriously win "best/
+    worst window" in the stats table on pure small-sample noise) rather
+    than reflecting anything that actually happened."""
     window_ms = window_seconds * 1000
+    num_complete_windows = int((end_ts_ms - start_ts_ms) // window_ms)
     buckets = {}
     for record in records:
         idx = int((record["ts_ms"] - start_ts_ms) // window_ms)
+        if idx >= num_complete_windows:
+            continue
         buckets.setdefault(idx, []).append(record)
     return buckets

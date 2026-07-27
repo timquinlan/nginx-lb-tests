@@ -1,12 +1,42 @@
 services:
+  # Personality removed (see AGENT.md, "backends share a baseline, drift
+  # independently" -- this supersedes the "still distinct, narrow later"
+  # plan recorded there; simplified straight to the shared-baseline
+  # end-state instead of narrowing gradually). All 5 backends now share
+  # the SAME LATENCY_MIN_MS/MAX_MS -- no more per-backend "personality" --
+  # so every backend still gets fresh per-request jitter within that
+  # shared range, but the only thing that ever differentiates one backend
+  # from another over time is the independently-drawn drift offset below.
+  # LATENCY_MIN_MS/MAX_MS default (10-20ms) is `backend-1`'s old range,
+  # kept as the shared baseline mostly because it happens to match
+  # "Standard 5G (MEC Edge)" on a real edge-latency benchmark table -- see
+  # AGENT.md.
+  #
+  # DEGRADATION_OFFSET_MIN_MS/MAX_MS -- shared across all 5 backends (same
+  # distribution; only the independent per-backend *draw* differs, same
+  # as it already was). Each backend independently redraws a signed
+  # offset (negative = currently faster than baseline, positive = slower)
+  # at every dwell transition -- asymmetric range on purpose, more
+  # physical room to get worse than to get better.
+  #
+  # DEGRADATION_MEAN_DWELL_SECONDS (still per-backend) controls each
+  # backend's own independent reshuffle cadence -- decoupled from
+  # TICK_SECONDS, randomized dwell per visit, see AGENT.md. Kept varied
+  # per backend even though personality is gone, purely so the 5
+  # backends' reshuffles stay decorrelated in time from each other rather
+  # than ever coinciding.
   backend-1:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "10"
-      LATENCY_MAX_MS: "20"
-      DEGRADATION_MULTIPLIER: "2"
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
+      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
+      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-1.log
+    volumes:
+      - ./logs:/var/log/upstream-rl
     networks:
       - upstream-rl
 
@@ -14,10 +44,14 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "5"
-      LATENCY_MAX_MS: "40"
-      DEGRADATION_MULTIPLIER: "4"
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
+      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
+      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-2.log
+    volumes:
+      - ./logs:/var/log/upstream-rl
     networks:
       - upstream-rl
 
@@ -25,10 +59,14 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "12"
-      LATENCY_MAX_MS: "18"
-      DEGRADATION_MULTIPLIER: "2"
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
+      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
+      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-3.log
+    volumes:
+      - ./logs:/var/log/upstream-rl
     networks:
       - upstream-rl
 
@@ -36,10 +74,14 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "15"
-      LATENCY_MAX_MS: "60"
-      DEGRADATION_MULTIPLIER: "4"
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
+      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
+      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-4.log
+    volumes:
+      - ./logs:/var/log/upstream-rl
     networks:
       - upstream-rl
 
@@ -47,10 +89,14 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "30"
-      LATENCY_MAX_MS: "80"
-      DEGRADATION_MULTIPLIER: "6"
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      LATENCY_MIN_MS: "${LATENCY_MIN_MS:-10}"
+      LATENCY_MAX_MS: "${LATENCY_MAX_MS:-20}"
+      DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-120}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
+      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-5.log
+    volumes:
+      - ./logs:/var/log/upstream-rl
     networks:
       - upstream-rl
 
@@ -66,7 +112,12 @@ services:
       dockerfile: controller/Dockerfile
     environment:
       DEPLOY_MODE: full
-      TICK_SECONDS: "${TICK_SECONDS:-60}"
+      # Default 10s, not the original 60s -- live-tested (see AGENT.md,
+      # "dwell-to-window ratio"): at the current DEGRADATION_MEAN_DWELL_SECONDS
+      # defaults, 60s and 20s ticks both showed cracks or outright collapsed
+      # significance, while 10s gave clean, fully-significant separation for
+      # both algorithms across a real 10-minute/150k-request run.
+      TICK_SECONDS: "${TICK_SECONDS:-10}"
       ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.1}"
       ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
     volumes:
