@@ -39,11 +39,11 @@ services:
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
-      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-1.log
+      DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-1.log
     volumes:
-      - ./logs:/var/log/upstream-rl
+      - ./logs:/var/log/nginx-lb-tests
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
   backend-2:
     build:
@@ -54,11 +54,11 @@ services:
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
-      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-2.log
+      DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-2.log
     volumes:
-      - ./logs:/var/log/upstream-rl
+      - ./logs:/var/log/nginx-lb-tests
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
   backend-3:
     build:
@@ -69,11 +69,11 @@ services:
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
-      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-3.log
+      DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-3.log
     volumes:
-      - ./logs:/var/log/upstream-rl
+      - ./logs:/var/log/nginx-lb-tests
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
   backend-4:
     build:
@@ -84,11 +84,11 @@ services:
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
-      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-4.log
+      DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-4.log
     volumes:
-      - ./logs:/var/log/upstream-rl
+      - ./logs:/var/log/nginx-lb-tests
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
   backend-5:
     build:
@@ -99,11 +99,11 @@ services:
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-120}"
       DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
       DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
-      DEGRADATION_LOG_PATH: /var/log/upstream-rl/degradation-backend-5.log
+      DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-5.log
     volumes:
-      - ./logs:/var/log/upstream-rl
+      - ./logs:/var/log/nginx-lb-tests
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
   # Adding a 6th+ backend for local dev means adding both a service here
   # (full mode builds/runs the container) and a line in upstream-hosts.txt
@@ -131,8 +131,8 @@ services:
       # and generated confs are directly browsable from the Mac side
       # (`ls ./logs`, feed straight into Phase 4 analysis scripts) without
       # `docker cp`/`docker exec`. Created on first run if missing.
-      - ./nginx-conf:/var/lib/upstream-rl/nginx-conf.d
-      - ./logs:/var/log/upstream-rl
+      - ./nginx-conf:/var/lib/nginx-lb-tests/nginx-conf.d
+      - ./logs:/var/log/nginx-lb-tests
     ports:
       - "8080:8080"
       - "80:80"
@@ -143,7 +143,7 @@ services:
       - backend-4
       - backend-5
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
 networks:
-  upstream-rl:
+  nginx-lb-tests:

@@ -1,4 +1,4 @@
-# upstream-rl
+# nginx-lb-tests
 
 A load balancing science experiment of sorts: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under continuously degrading and improving latency conditions. The experimental algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against standard NGINX algorithms (round robin, random, random two, least_conn). Rround robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
 

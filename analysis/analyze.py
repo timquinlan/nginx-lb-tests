@@ -494,7 +494,7 @@ def run_analysis(logs_dir=None, out_dir=None, run_index=None, start_ts_ms=None, 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="upstream-rl Phase 4 analysis")
+    parser = argparse.ArgumentParser(description="nginx-lb-tests Phase 4 analysis")
     selector = parser.add_mutually_exclusive_group()
     selector.add_argument("--run", type=int, help="run index to analyze (see runs.log). Default: most recent run")
     selector.add_argument("--start-ts", type=int, help="analyze the run with this exact start_ts_ms instead of --run")

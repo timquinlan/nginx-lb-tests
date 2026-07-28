@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Homegrown backend HTTP server for upstream-rl.
+"""Homegrown backend HTTP server for nginx-lb-tests.
 
 Every request sleeps for a random duration (simulating latency) plus
 whatever this backend's current, independently-drifting offset adds on
@@ -136,7 +136,7 @@ def current_degradation_offset_ms() -> float:
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "upstream-rl-backend/0.1"
+    server_version = "nginx-lb-tests-backend/0.1"
 
     def log_message(self, fmt, *args):
         # NGINX access logs are the experimental record; keep backend stdout quiet.

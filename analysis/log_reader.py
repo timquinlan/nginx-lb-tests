@@ -4,7 +4,7 @@ Deliberately self-contained (stdlib only, no import from controller/):
 analysis/ is meant to be runnable two ways --
 
   1. Automatically, in-container, via traffic_generator.py's end-of-run
-     hook (LOG_DIR is already set to /var/log/upstream-rl there).
+     hook (LOG_DIR is already set to /var/log/nginx-lb-tests there).
   2. Manually, from the host machine, pointed straight at the bind-mounted
      ./logs directory (`python3 analysis/analyze.py`) -- see AGENT.md
      "Bind mounts, not named volumes" for why that property matters here.
@@ -25,7 +25,7 @@ import os
 
 # Matches controller/common.py's own default-from-env pattern (see its
 # LOG_DIR / --tick precedent): inside the container LOG_DIR is already set
-# to /var/log/upstream-rl, so the hook needs no extra wiring. Run from the
+# to /var/log/nginx-lb-tests, so the hook needs no extra wiring. Run from the
 # host with no override, and this falls back to a path relative to the
 # current working directory -- expected to be the repo root, where the
 # bind-mounted ./logs directory lives.

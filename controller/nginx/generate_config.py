@@ -7,7 +7,7 @@ under CONF_DIR:
   rr.upstream.conf   -- static, unweighted, never touched again
   aco.upstream.conf  -- equal-weight placeholder, rewritten by config_writer
   mc.upstream.conf   -- equal-weight placeholder, rewritten by config_writer
-  upstream-rl.conf   -- resolver + log_format + server{} with one location
+  nginx-lb-tests.conf   -- resolver + log_format + server{} with one location
                         block per algorithm path
 
 Nothing here is hardcoded to a specific number of backends.
@@ -43,7 +43,7 @@ RESOLVER_BY_MODE = {
     "external": "resolver 8.8.8.8;",
 }
 
-LOG_FORMAT_NAME = "upstream_rl"
+LOG_FORMAT_NAME = "nginx_lb_tests"
 # Last field used to be $sent_http_x_degradation_state (a 0/1/2 enum, back
 # when backends ran a fixed staircase). Backends now report a continuous,
 # signed offset in ms (X-Degradation-Offset-Ms) -- see AGENT.md, "backends
@@ -117,7 +117,7 @@ def main():
         write_upstream_conf(path, algo, hosts, BACKEND_PORT, weights=weights)
         log("generate_config", f"wrote {path} (equal-weight placeholder)")
 
-    main_conf_path = os.path.join(CONF_DIR, "upstream-rl.conf")
+    main_conf_path = os.path.join(CONF_DIR, "nginx-lb-tests.conf")
     content = render_main_conf(hosts, DEPLOY_MODE, NGINX_EXPERIMENT_PORT, LOG_DIR)
     tmp_path = f"{main_conf_path}.tmp"
     with open(tmp_path, "w") as f:

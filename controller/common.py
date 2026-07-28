@@ -22,14 +22,14 @@ import sys
 # generate_config.py drops one static, non-mount-backed include file into
 # the real /etc/nginx/conf.d that just does `include {CONF_DIR}/*.conf;`
 # -- see NGINX_STOCK_CONF_D below.
-CONF_DIR = os.environ.get("CONF_DIR", "/var/lib/upstream-rl/nginx-conf.d")
+CONF_DIR = os.environ.get("CONF_DIR", "/var/lib/nginx-lb-tests/nginx-conf.d")
 NGINX_STOCK_CONF_D = "/etc/nginx/conf.d"
-NGINX_INCLUDE_BOOTSTRAP_PATH = os.path.join(NGINX_STOCK_CONF_D, "upstream-rl-include.conf")
+NGINX_INCLUDE_BOOTSTRAP_PATH = os.path.join(NGINX_STOCK_CONF_D, "nginx-lb-tests-include.conf")
 
 # LOG_DIR and HOSTS_FILE are backed by a named volume / bind mount
 # respectively so they persist and are user-editable independent of the
 # image.
-LOG_DIR = os.environ.get("LOG_DIR", "/var/log/upstream-rl")
+LOG_DIR = os.environ.get("LOG_DIR", "/var/log/nginx-lb-tests")
 HOSTS_FILE = os.environ.get("HOSTS_FILE", "/app/upstream-hosts.txt")
 
 RUNS_LOG_PATH = os.path.join(LOG_DIR, "runs.log")
@@ -122,7 +122,7 @@ def read_location_paths(main_conf_path=None):
     """Read algorithm paths back out of the generated NGINX config, rather
     than hardcoding /rr, /aco, /mc anywhere downstream (traffic generator
     requirement)."""
-    main_conf_path = main_conf_path or os.path.join(CONF_DIR, "upstream-rl.conf")
+    main_conf_path = main_conf_path or os.path.join(CONF_DIR, "nginx-lb-tests.conf")
     paths = []
     pattern = re.compile(r"^\s*location\s+(/\S+)\s*\{")
     with open(main_conf_path) as f:

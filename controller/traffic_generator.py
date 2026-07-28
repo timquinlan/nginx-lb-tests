@@ -192,7 +192,7 @@ def run(tick_seconds, rps, duration_ticks):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="upstream-rl traffic generator")
+    parser = argparse.ArgumentParser(description="nginx-lb-tests traffic generator")
     parser.add_argument(
         "--tick",
         type=float,

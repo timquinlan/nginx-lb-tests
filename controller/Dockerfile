@@ -20,7 +20,7 @@ RUN apt-get update \
 # ENV makes it visible to any process in the container, one-off docker
 # exec included, and gives both common.py and log_reader.py the same
 # value without duplicating the literal.
-ENV LOG_DIR=/var/log/upstream-rl
+ENV LOG_DIR=/var/log/nginx-lb-tests
 
 WORKDIR /app
 COPY controller/ /app/

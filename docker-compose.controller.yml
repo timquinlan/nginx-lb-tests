@@ -20,13 +20,13 @@ services:
       # Same host paths as docker-compose.full.yml by design -- switching
       # deployment modes against the same generated-conf/log data is
       # intentional, not accidental sharing.
-      - ./nginx-conf:/var/lib/upstream-rl/nginx-conf.d
-      - ./logs:/var/log/upstream-rl
+      - ./nginx-conf:/var/lib/nginx-lb-tests/nginx-conf.d
+      - ./logs:/var/log/nginx-lb-tests
     ports:
       - "8080:8080"
       - "80:80"
     networks:
-      - upstream-rl
+      - nginx-lb-tests
 
 networks:
-  upstream-rl:
+  nginx-lb-tests:
