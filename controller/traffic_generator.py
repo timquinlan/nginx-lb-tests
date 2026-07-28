@@ -129,6 +129,7 @@ def run(tick_seconds, rps, duration_ticks):
     total_duration_seconds = tick_seconds * duration_ticks
     start_ts_ms = now_ms()
     start_monotonic = time.monotonic()
+    baseline_change_counts = current_change_counts()
 
     log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path duration={duration_ticks} ticks ({total_duration_seconds}s)")
 
@@ -160,7 +161,11 @@ def run(tick_seconds, rps, duration_ticks):
         while tick_index < duration_ticks and not interrupted:
             time.sleep(tick_seconds)
             tick_index += 1
-            print(format_status_line(tick_index, duration_ticks, rps, current_change_counts()), flush=True)
+            run_change_counts = {
+                algo: current_change_counts()[algo] - baseline_change_counts[algo]
+                for algo in baseline_change_counts
+            }
+            print(format_status_line(tick_index, duration_ticks, rps, run_change_counts), flush=True)
     finally:
         stop_event.set()
         for executor in executors.values():

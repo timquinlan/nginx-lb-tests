@@ -1,10 +1,21 @@
 # upstream-rl
 
-A load balancing science experiment of sorts: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under continuously degrading and improving latency conditions. The initial algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against standard NGINX algorithms (round robin, random, random two, least_conn). Rround robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
+A load balancing science experiment of sorts: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under continuously degrading and improving latency conditions. The experimental algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against standard NGINX algorithms (round robin, random, random two, least_conn). Rround robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
 
 The primary contribution isn't the experiment result itself (which algorithm "wins") -- it's the experimentation *methodology*: a reproducible framework for measuring performance differences between upstream-selection algorithms, with analysis tooling specific enough to work out of the box against this project's log format but simple enough to adapt to a different algorithm or log schema. Longer-term framing: a paper/talk on ACO-inspired load balancing for edge devices that operate without centralized orchestration -- ant colony behavior is inherently decentralized and locally-informed, which is a natural fit for that setting. 
 
-See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
+See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
+
+## Quick start
+
+```sh
+docker compose -f docker-compose.full.yml up --build -d
+# the time of the test is tick * duration, for a 10 minute test use --tick 10 --duration 60
+docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
+  python3 traffic_generator.py --tick 10 --rps 100 --duration 6   # one minute smoke test
+```
+
+That builds and starts the controller plus the local backend pool (validates backends, generates NGINX config, primes `/aco`/`/mc` with equal weights), then runs a short traffic burst against all six paths. Results (stdout summary, PNG charts, text stats report) land in `./logs/analysis/`. See "Running an experiment" below for real (non-smoke-test) defaults, re-analyzing a past run, and pointing at external backends instead of the local pool.
 
 ## How it works
 
@@ -12,8 +23,8 @@ One controller container runs NGINX plus a set of Python scripts (backend valida
 
 | Path | Mechanism | Who rewrites it |
 |---|---|---|
-| `/rr`  | Unweighted round robin | Nobody -- generated once, static for the life of the container. The baseline. |
-| `/random` | NGINX `random` -- a weighted dice roll, every request | Nobody -- static, same as `/rr` |
+| `/rr`  | Unweighted round robin. Used as the baseline control. | Nobody -- generated once, static for the life of the container. The baseline. |
+| `/random` | NGINX `random` -- a weighted dice roll, every request. With the amount of traffic the test pushes, this quickly converges to an even distribution.  It is included as a check against the round robin control, e.g. if there is a significant divergence between /rr and /random that run's results should be discarded. | Nobody -- static, same as `/rr` |
 | `/random2` | NGINX `random two` -- pick 2 at random, then route to whichever of those 2 has fewer active connections (`least_conn` is the built-in default method for `two` in open-source NGINX) | Nobody -- static, same as `/rr` |
 | `/leastconn` | NGINX `least_conn` -- always route to whichever backend has the fewest active connections, no randomness | Nobody -- static, same as `/rr` |
 | `/aco` | Weighted round robin | The ACO module, every sampling window |
@@ -21,7 +32,7 @@ One controller container runs NGINX plus a set of Python scripts (backend valida
 
 `/aco` and `/mc` share the same underlying NGINX mechanism (weighted round robin) -- the only difference between them is who computes the weights and how. Every sampling window, each reads **its own** access log (a closed feedback loop: the traffic distribution the algorithm chose is exactly what feeds its next decision), computes each backend's mean response time (TTFB, via NGINX's `$upstream_header_time`), hands that to its algorithm module, gets back an integer weight (1-100) per backend, writes it to its own upstream conf, and reloads NGINX gracefully. If a backend gets zero real traffic in a window (common once an algorithm concentrates its weight elsewhere), the sampler falls back to a single direct probe of that backend so the algorithm always has at least one observation to work with.
 
-`/rr`, `/random`, `/random2`, and `/leastconn` are all **static**, the same way `/rr` always was: NGINX's own upstream-block method directive (`random`, `random two`, `least_conn` -- see `controller/nginx/upstream_conf.py`) does the selection internally, every request, with no Python-side weight computation, no sampling loop, no `weights.csv`, and no config-change counter. They exist to compare this project's adaptive algorithms against the load-balancing methods NGINX (and most L7 reverse proxies) already ship out of the box -- see "The algorithms" below for why `random two least_conn` specifically isn't a fourth path.
+`/rr`, `/random`, `/random2`, and `/leastconn` configurations are all **static**, the same way `/rr` always was: NGINX's own upstream-block method directive (`random`, `random two`, `least_conn` -- see `controller/nginx/upstream_conf.py`) does the selection internally, every request, with no Python-side weight computation, no sampling loop, no `weights.csv`, and no config-change counter. They exist to compare this project's adaptive algorithms against the load-balancing methods NGINX (and most L7 reverse proxies) already ship out of the box -- see "The algorithms" below for why `random two least_conn` specifically isn't a fourth path.
 
 Before any of this starts, the controller validates every backend is reachable (fail-fast, with retries -- so Docker start-up ordering doesn't cause a false failure) and runs one full priming pass so `/aco` and `/mc` start from algorithm-derived weights on their very first proxied request, not the equal-weight placeholder.
 
@@ -30,27 +41,28 @@ Before any of this starts, the controller validates every backend is reachable (
 - **Round robin** (`/rr`) -- no learning, no module. The control everything else is measured against.
 - **Random** (`/random`) -- NGINX's `random` upstream directive: a fresh weighted dice roll per request, no memory of past selections at all. **Not really a comparison algorithm in its own right** -- at scale, an unweighted dice roll and unweighted round robin converge to the same distribution (law of large numbers), so `/random` vs. `/rr` is expected to come back statistically indistinguishable every time, and has in every run so far. Kept deliberately anyway, as a cheap validity check: it's a mechanistically independent NGINX code path (a probabilistic selector, not the round-robin state machine `/rr` uses) that's expected to agree with `/rr`'s result. If it ever *didn't* agree, that would flag a problem with the measurement harness itself (uneven backend health, stale DNS, a skewed traffic split) rather than a real algorithmic difference -- two independently-implemented baselines agreeing is stronger evidence the setup is trustworthy than either alone.
 - **Random two** (`/random2`) -- NGINX's `random two` directive: pick 2 backends at random, then route to whichever of those 2 currently has fewer active connections. This is NGINX's own "power of two choices" method -- some live, instantaneous state (connection count) feeds the decision, unlike plain `/random`.
-- **Least connections** (`/leastconn`) -- NGINX's `least_conn` directive: always route to whichever backend has the fewest active connections, pool-wide, no randomness anywhere in the selection. **Not** `random two least_conn` -- in open-source NGINX, `least_conn` is already the *default* (and only non-Plus) method for `random two`'s `two` parameter, so a literal `random two least_conn` path would be mechanistically identical to `/random2` above, just spelled out explicitly. `/leastconn` was added in its place as a genuinely distinct fourth static comparison point instead -- see `AGENT.md`.
+- **Least connections** (`/leastconn`) -- NGINX's `least_conn` directive: always route to whichever backend has the fewest active connections, pool-wide, no randomness anywhere in the selection.
 - **ACO** (`/aco`) -- one pheromone value per backend. Every window: evaporate all of them by a configurable rate, then deposit an amount inversely proportional to that backend's latency (faster backend, bigger deposit). Weight is read off the pheromone table relative to its current max. This gives ACO *momentum*: it's slow to forget, so it stays stable but lags behind sudden latency shifts.
 - **Markov Chain** (`/mc`) -- a transition matrix rebuilt completely from scratch every window, purely from that window's latency observations (no self-transitions, so every window models moving to a different, faster backend). Weight is the matrix's stationary distribution (computed via power iteration), scaled directly by 100. This makes Markov genuinely *memoryless*: no state carries over between windows, so it reacts fully and immediately to whatever just happened, at the cost of being noisier.
 
-These six sit on a rough information/memory-horizon ladder: `/rr` and `/random` use no live or historical information at all; `/random2` and `/leastconn` use NGINX's own live, instantaneous state (current connection counts) with no memory of anything before this instant; `/mc` uses historical information (last window's latency observations) with no memory across windows; `/aco` uses historical information *with* persistent, decaying memory across windows. Where each one's unpredictability (if any) enters also differs: `/random` and `/random2` inject randomness at the selection mechanism itself (a dice roll, given a fixed state); `/aco`/`/mc`'s selection is deterministic and reproducible given a fixed weight vector -- their unpredictability comes from upstream, in the environment's own randomly-generated latency feeding a deterministic weight-update rule. Avoid describing this split as a flat "deterministic vs. non-deterministic" binary -- both halves of that distinction matter and answer different questions (see `AGENT.md`).
+These six sit on a rough information/memory-horizon ladder: `/rr` and `/random` use no live or historical information at all; `/random2` and `/leastconn` use NGINX's own live, instantaneous state (current connection counts) with no memory of anything before this instant; `/mc` uses historical information (last window's latency observations) with no memory across windows; `/aco` uses historical information *with* persistent, decaying memory across windows. Where each one's unpredictability (if any) enters also differs: `/random` and `/random2` inject randomness at the selection mechanism itself (a dice roll, given a fixed state); `/aco`/`/mc` inject it one layer up instead. Which *weights* get chosen each window is effectively non-deterministic -- it's a function of the environment's own randomly-generated backend latency, fed through a deterministic update rule (same inputs would reproduce the same weights, but the inputs themselves aren't fixed). What NGINX actually runs on any given request, though, is a plain, deterministic weighted round-robin config -- whatever integer weight vector got written down that window is held fixed and cycled through predictably until the next window's reload overwrites it. So the non-determinism lives entirely in *which* WRR config gets written each tick, not in how that config gets executed once it's live. Avoid describing this split as a flat "deterministic vs. non-deterministic" binary -- both halves of that distinction matter and answer different questions (see `AGENT.md`).
 
 In testing, ACO vs. Markov contrast shows up concretely: given the *identical* underlying latency data in the same window, ACO tends to lock onto a favorite backend and hold it (its leader often near weight 100, clearly separated from the rest), while Markov's weights stay much flatter and shift around more, since it never accumulates confidence the way ACO does. Neither algorithm "wins" outright -- the interesting question is under which conditions each one wins, and (now) how either compares against what NGINX already ships for free.
 
 ## Backend pool (default, full mode)
 
-Defined in `upstream-hosts.txt` (the single source of truth -- nothing in the codebase hardcodes a backend count; scaling to 10 or 25 is just adding lines). Each backend has a fixed **personality** (its own `LATENCY_MIN_MS`/`MAX_MS` range) representing a heterogeneous hardware fleet -- some backends permanently weaker (e.g. older CPUs kept as low-weight backups), which is deliberate: if every backend performed identically on average, the honest answer would just be "use plain weighted round-robin or least-connections" (what enterprises actually run today for this exact deployment pattern -- an L7 reverse proxy in front of an internal backend pool, per real-world research; anycast turns out to be a public-edge/DNS technique, not something used for internal application traffic at all), since there'd be no persistent structural difference left to learn. Distinct personalities represent exactly the kind of asymmetry that static/instantaneous baseline can't see (see `AGENT.md`, "backends share a baseline, drift independently," for the fuller reasoning and the shared-baseline variant this was tried against):
+Defined in `upstream-hosts.txt` (the single source of truth -- nothing in the codebase hardcodes a backend count; scaling to 10 or 25 is just adding lines). Each backend has a fixed **personality** (its own `LATENCY_MIN_MS`/`MAX_MS` range) representing a heterogeneous hardware fleet -- some backends permanently weaker (e.g. older CPUs kept as low-weight backups), which is deliberate. Distinct personalities represent exactly the kind of asymmetry that static/instantaneous baseline can't see (see `AGENT.md`, "backends share a baseline, drift independently," for the fuller reasoning and the shared-baseline variant this was tried against):
 
 | Backend | Latency range (personality) | Reshuffle cadence (mean dwell) | Character |
 |---|---|---|---|
-| `backend-1` | 10-20ms | 40s | fast, tight, reliable |
-| `backend-2` | 5-40ms | 80s | fast floor, high variance |
-| `backend-3` | 12-18ms | 40s | fast, very tight |
-| `backend-4` | 15-60ms | 80s | medium baseline, moderate variance |
-| `backend-5` | 30-80ms | 120s | slow baseline, high variance |
+| `backend-1` | 150-200ms | 40s | fast, tight, reliable |
+| `backend-2` | 150-350ms | 80s | fast floor, high variance |
+| `backend-3` | 160-190ms | 40s | fast, very tight |
+| `backend-4` | 220-450ms | 80s | medium baseline, moderate variance |
+| `backend-5` | 350-600ms | 120s | slow baseline, high variance |
 
-Every backend also independently drifts on top of its own personality range: at every reshuffle (a randomized dwell, not a fixed clock -- `DEGRADATION_MEAN_DWELL_SECONDS`, decoupled from `--tick`, see below), it draws a fresh **signed offset** (`DEGRADATION_OFFSET_MIN_MS`/`MAX_MS`, shared range across all backends, default -10ms to +250ms -- more room to get worse than to get better) and holds it until the next reshuffle. Negative = currently faster than its own baseline; positive = slower. This is fully decentralized -- no backend knows about any other's current offset, no shared clock, no coordination -- which makes two independent continuous random draws landing on the exact same value only around a 1-in-900-trillion chance per reshuffle (see `AGENT.md`), and considered a non-issue even if it were far more likely. Reported via `X-Degradation-Offset-Ms` on every response and logged as ground truth to `./logs/degradation-{backend}.log` (`timestamp_ms,offset_ms,dwell_seconds`), since -- with both dwell time and the offset itself randomized -- the schedule can't be computed in advance the way a fixed clock could.
+
+Every backend also independently drifts on top of its own personality range: at every reshuffle (a randomized dwell, not a fixed clock -- `DEGRADATION_MEAN_DWELL_SECONDS`, decoupled from `--tick`, see below), it draws a fresh **signed offset** (`DEGRADATION_OFFSET_MIN_MS`/`MAX_MS`, shared range across all backends, default -10ms to +250ms -- more room to get worse than to get better) and holds it until the next reshuffle. . This is fully decentralized -- no backend knows about any other's current offset, no shared clock, no coordination. Reported via `X-Degradation-Offset-Ms` on every response and logged as ground truth to `./logs/degradation-{backend}.log` (`timestamp_ms,offset_ms,dwell_seconds`), since -- with both dwell time and the offset itself randomized -- the schedule can't be computed in advance the way a fixed clock could.
 
 **To "level out" the personalities for an identical-node run** (e.g. to reproduce the shared-baseline methodology check in `AGENT.md`), edit the 5 `LATENCY_MIN_MS`/`MAX_MS` values in `docker-compose.full.yml` directly for that run -- same workflow already used for every other backend-config experiment in this project (halved/doubled latency, wide-range offset). `DEGRADATION_OFFSET_MIN_MS`/`MAX_MS` remain single shared overrides (same `${VAR:-default}` pattern as `TICK_SECONDS`) regardless.
 
@@ -66,16 +78,7 @@ Everything algorithm/traffic-generator-side derives from one base unit, `--tick`
 
 ## Choosing `--tick`
 
-**Default is 10s**, changed from the original 60s after live-testing four tick values against the same 10-minute, rps=250, `DEGRADATION_MEAN_DWELL_SECONDS` config (40/80/120s means, unscaled) -- a clean dose-response relationship in the dwell-to-window ratio (see `AGENT.md`):
-
-| Tick (window) | Ratio (fastest backend) | `aco` vs `rr` mean | `mc` vs `rr` mean |
-|---|---|---|---|
-| 60s | 0.67x | -0.1ms, not significant | +1.5ms, not significant |
-| 20s | 2x | -4.8ms, significant | -20.1ms, significant (aco's median was not) |
-| **10s** | **4x** | **-12.3ms, all 5 stats significant** | **-32.4ms, all 5 stats significant** |
-| 5s | 8x | -26.4ms, all 5 stats significant | -42.2ms, all 5 stats significant |
-
-10s is the smallest tick that gave clean, fully-significant separation for both algorithms at these dwell settings -- 20s already showed cracks (one non-significant stat), 60s collapsed both algorithms into statistical noise (both algorithms end up reacting too slowly relative to how fast the ground truth is already moving). **The ratio, not the absolute tick value, is what actually matters** -- if you change `DEGRADATION_MEAN_DWELL_SECONDS` (or scale up backend count/timing for a different setup), re-derive this table rather than assuming 10s still lands in the safe zone; aim for at least ~4x the sampling window on the fastest backend class as a starting point, and re-test if precision matters.
+**Default is 10s.** The ratio between `--tick` (the sampling window) and `DEGRADATION_MEAN_DWELL_SECONDS` (how fast the environment actually changes) -- not the absolute tick value -- determines whether `aco`/`mc` get a clean signal at all; aim for at least ~4x the sampling window on the fastest backend class as a starting point if you change either. See `FINDINGS.md` for the dose-response results (and a 60-minute-scale reconfirmation) behind this default, and `AGENT.md` for the underlying mechanism.
 
 ## Data & where it lands
 
@@ -87,16 +90,8 @@ Everything is written to plain host directories (bind mounts, not opaque Docker 
 - **`./logs/analysis/`** -- Phase 4/5's output for each analyzed run: PNG charts (TTFB over time with a degradation overlay, per-backend selection frequency) and `runN_stats_report.txt` -- TTFB mean/median/p90/p95/p99 for every discovered algorithm, all six ranked best-to-worst, each non-control algorithm's comparison against the `rr` control (Mann-Whitney U p-value plus bootstrap confidence intervals -- not just deltas, an actual significance test), and an incremental head-to-head between the best-performing static/built-in algorithm and the best-performing adaptive one (`aco`/`mc`). See `analysis/README.md`.
 - **`./nginx-conf/`** -- the generated NGINX confs themselves, if you want to see exactly what's live at any moment.
 
-## Project status
 
-- **Phase 1** (scaffolding: validation, config generation, priming, traffic generator, plumbing) -- done.
-- **Phase 2** (ACO) -- done.
-- **Phase 3** (Markov Chain, all three paths running simultaneously) -- done.
-- **Phase 4** (analysis tooling in `analysis/`) -- done.
-- **Phase 5** (`/random`, `/random2`, `/leastconn` -- NGINX's own built-in load-balancing methods as comparison paths; ranking + best-built-in-vs-best-adaptive analysis in the stats report) -- done.
-- **Phase 6** (`worker_processes` 1 -> 4, with a `zone` directive added to every upstream block so round-robin/weighted/least_conn/random selection state stays correctly shared across workers instead of skewing per-worker) -- done.
-
-## Quick start
+## Running an experiment
 
 ```sh
 docker compose -f docker-compose.full.yml up --build -d
@@ -121,24 +116,27 @@ python3 analysis/analyze.py --run 3          # from the host, against ./logs
 
 **On short smoke-test runs, expect the stats report to say "not statistically significant" everywhere** -- a few thousand requests over tens of seconds usually isn't enough to separate real algorithm differences from noise, especially against backends with deliberately overlapping latency ranges. That's the correct, expected answer at this scale, not a sign anything is broken -- see `analysis/README.md`.
 
-Points at external backends instead of building local ones:
+## Controller-only mode (real backends instead of the simulation)
+
+`docker-compose.full.yml` builds and starts its own backend containers with synthetic, controllable latency (the "Backend pool" table above) -- that's what every result in `FINDINGS.md` is measured against, and it's the right choice for reproducing this project's own experiments. `docker-compose.controller.yml` is the other half: it starts **only** the controller (NGINX + the Python scripts), pointed at whatever real hosts you list, with no backend containers built at all. Use it to run the same six-algorithm comparison against actual infrastructure -- real servers, cloud VMs, another team's staging fleet -- instead of the simulation, e.g. to sanity-check whether the simulated results hold up against real-world latency behavior, or to just use this project as a genuine load-balancing algorithm comparison tool for a backend pool you actually run.
+
+**Configuring `upstream-hosts.txt` for this mode:** one hostname or IP per line, `#` for comments, blank lines ignored (`controller/common.py`'s `read_upstream_hosts()`) -- the same file `docker-compose.full.yml` uses, just with different meaning: there, each line is a Docker Compose service name resolved by Docker's embedded DNS; here, it's any host reachable from the controller container over the network. Nothing hardcodes a backend count -- scaling from 5 to 25 real hosts is purely adding lines.
+
+**Every listed host is assumed to be listening on the same port** -- `BACKEND_PORT` (`controller/common.py`, default `8080`), applied uniformly to every line in the file, not settable per-host, and not currently exposed as an environment override in `docker-compose.controller.yml`. If your real backends listen on a different port, add a `BACKEND_PORT: "${BACKEND_PORT:-8080}"` line to that Compose file's controller `environment:` block yourself (same pattern already used for `TICK_SECONDS`) -- there's no `host:port` syntax inside `upstream-hosts.txt` itself.
 
 ```sh
 # edit upstream-hosts.txt to list reachable external hosts/IPs first
 docker compose -f docker-compose.controller.yml up --build -d
 ```
 
+Startup still runs the same fail-fast backend validation as `docker-compose.full.yml` (see "How it works" above) -- if a listed host isn't reachable on `BACKEND_PORT`, the container exits with an actionable error naming which host failed, rather than starting half-broken. `DEPLOY_MODE=external` also switches NGINX's `resolver` directive to a public DNS (`8.8.8.8`) instead of Docker's embedded one (`127.0.0.11`), since there's no Docker-internal DNS to resolve real external hostnames.
+
 Only run one of these two Compose files at a time from this directory -- they share a Docker Compose project name (and volumes) by design, so bring one down (`docker compose -f <file> down`) before starting the other.
 
 ## Choosing `--rps`
 
-**Default is 500** (per algorithm path, ~3000 aggregate across all six paths -- `/rr`/`/random`/`/random2`/`/leastconn`/`/aco`/`/mc`) -- approximates a sustained ~1B-hits/month production load. Went through two intermediate defaults the same session before landing here: 125 (conservative, picked when `/random`/`/random2`/`/leastconn` were first added, before multi-worker existed to justify more), then 250 (~500M-hits/month, restored once `worker_processes` moved from 1 to 4 with a `zone` directive on every upstream block -- see `AGENT.md`, "Phase 6"), then 500 once 250's own headroom turned out to be larger than expected. **Zero** `worker_connections` warnings or errors in any `*.error.log` at 500rps/path, controller container holding around 130% CPU -- well under the ~400% four fully-saturated workers could reach. That's a measured data point, not a linear model: 250rps/path measured separately at ~84-85% CPU (more than half of the 500rps/path figure, not less) -- per-worker/per-connection overhead means CPU-vs-rps doesn't scale proportionally, so don't assume intermediate `--rps` values interpolate cleanly between these two points.
+**Default is 500** (per algorithm path, ~3000 aggregate across all six paths) -- approximates a sustained ~1B-hits/month production load, validated with zero `worker_connections` warnings or errors in any `*.error.log`. See `AGENT.md`, "Phase 6," for the CPU/throughput measurements and the journey to this default.
 
-**Validated live, all six paths simultaneously, at every default along the way -- including the current 500 default itself:** 60s smoke tests and full 10-minute runs at 125, 250, and 500 all completed with zero `worker_connections` warnings or errors in any `*.error.log`. The 500rps/path run (~300k requests/path over 10 minutes) is the fourth consecutive run, across all three rps defaults tried this session, to reproduce the same algorithm ranking: `leastconn` best, then `random2`/`mc`, then `aco`, then `rr`/`random` statistically indistinguishable from each other -- a reproducibility signal in its own right, not just a throughput check. The single-worker `~650rps/path` ceiling below still predates both the six-path config and the multi-worker move -- not yet independently re-measured for exactly where *this* config's own ceiling sits, only that 500rps/path (the current default) is comfortably under it.
+For a quick plumbing smoke test where realism doesn't matter, pass a low `--rps` explicitly (e.g. `--rps 5`).
 
-For a quick plumbing smoke test where realism doesn't matter, pass a low `--rps` explicitly (e.g. `--rps 5`) -- at the default you'll rarely see a fallback-probe log line, since every backend gets plenty of real traffic per window even after an algorithm has deprioritized it. The numbers below predate the six-path default and were measured against the original three-path config; `--rps 500` there remains a reasonable historical data point for pushing toward this machine's ceiling: on a MacBook Air M4 (24GB RAM) it kept the controller container around 75-79% of one core with no errors.
-
-The real ceiling is hardware-dependent, so treat these numbers as a starting point, not a hard number -- push `--rps` up and watch `docker stats` alongside the per-algorithm error logs (`./logs/{rr,random,random2,leastconn,aco,mc}.error.log`) if you want to find this machine's actual limit:
-
-- **CPU headroom**: the numbers below (~650rps/path, 91-95% CPU) predate `worker_processes` moving from `1` to `4` -- see `AGENT.md`, "Phase 6," for why one worker was pinned originally, why it changed, and the `zone` directive every upstream block now has to keep round-robin/weighted/least_conn/random selection state correctly shared across all 4 workers instead of skewing per-worker. Since re-measured (not re-derived) at the new default: 250rps/path holds around 84-85% CPU, 500rps/path around 130% -- both well under the ~400% four fully-saturated workers could reach, and neither close to the old single-worker numbers below despite 500rps/path here meaning ~3000rps aggregate across six paths, roughly 1.5x the old three-path measurement's aggregate. `docker stats`' CPU% is per-logical-core (100% = one core saturated; this host has 10, no container CPU limit is set in either Compose file, so up to ~1000% is theoretically visible) -- worth knowing since 130% at 4 workers can look low at a glance if you're expecting it to already be near 400%.
-- **A `worker_connections` warning in any `*.error.log` means you've gone past this machine's ceiling** -- drop `--rps` back down. Slower machines will hit both limits earlier than 500; faster ones may comfortably exceed 650.
+The real ceiling is hardware-dependent -- push `--rps` up and watch `docker stats` alongside the per-algorithm error logs (`./logs/{rr,random,random2,leastconn,aco,mc}.error.log`) if you want to find yours. **A `worker_connections` warning in any `*.error.log` means you've gone past the ceiling** -- drop `--rps` back down.
