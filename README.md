@@ -1,10 +1,10 @@
 # nginx-lb-tests
 
-A load balancing science experiment of sorts: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under continuously degrading and improving latency conditions. The experimental algorithms are **Ant Colony Optimization (ACO)** and a **Markov Chain**, measured against standard NGINX algorithms (round robin, random, random two, least_conn). Rround robin as the baseline control. The architecture is built so additional algorithms can be added without restructuring the project.
+A load balancing experiment: compares multiple upstream-selection algorithms running **simultaneously** against the same pool of backends, under continuously degrading and improving latency conditions. Experimental adaptive algorithms (**Ant Colony Optimization (ACO)** and **Markov Chain**) are measured against standard NGINX algorithms (round robin, random, random two, least_conn). Round robin is the baseline control and random is a check against the control. The architecture is built so additional algorithms can be added without restructuring the project.
 
-The primary contribution isn't the experiment result itself (which algorithm "wins") -- it's the experimentation *methodology*: a reproducible framework for measuring performance differences between upstream-selection algorithms, with analysis tooling specific enough to work out of the box against this project's log format but simple enough to adapt to a different algorithm or log schema. Longer-term framing: a paper/talk on ACO-inspired load balancing for edge devices that operate without centralized orchestration -- ant colony behavior is inherently decentralized and locally-informed, which is a natural fit for that setting. 
+The primary contribution isn't the experiment result itself (which algorithm "wins") -- it's the experimentation *methodology*: a reproducible framework for measuring performance differences between upstream-selection algorithms, with analysis tooling specific enough to work out of the box against this project's log format but simple enough to adapt to a different algorithm or log schema. Longer-term framing: a paper/talk on ACO-inspired load balancing more generally -- ant colony behavior is inherently decentralized and locally-informed, an interesting property to explore in its own right, independent of any particular deployment target.
 
-See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
+See `ALGORITHMS.md` for how ACO and Markov Chain each work and why they were picked. See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
 
 ## Quick start
 
@@ -16,6 +16,8 @@ docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
 ```
 
 That builds and starts the controller plus the local backend pool (validates backends, generates NGINX config, primes `/aco`/`/mc` with equal weights), then runs a short traffic burst against all six paths. Results (stdout summary, PNG charts, text stats report) land in `./logs/analysis/`. See "Running an experiment" below for real (non-smoke-test) defaults, re-analyzing a past run, and pointing at external backends instead of the local pool.
+
+To run an experiment against existing upstreams, see the **Controller-only mode (real backends instead of the simulation)** section of this document.
 
 ## How it works
 
@@ -135,7 +137,7 @@ Only run one of these two Compose files at a time from this directory -- they sh
 
 ## Choosing `--rps`
 
-**Default is 500** (per algorithm path, ~3000 aggregate across all six paths) -- approximates a sustained ~1B-hits/month production load, validated with zero `worker_connections` warnings or errors in any `*.error.log`. See `AGENT.md`, "Phase 6," for the CPU/throughput measurements and the journey to this default.
+**Default is 500** (per algorithm path, ~3000 aggregate across all six paths) -- approximates a sustained ~1B-hits/month production load, validated with zero `worker_connections` warnings or errors in any `*.error.log`. See `AGENT.md`, "NGINX process model: 4 workers, shared zones," for the underlying CPU/throughput mechanics.
 
 For a quick plumbing smoke test where realism doesn't matter, pass a low `--rps` explicitly (e.g. `--rps 5`).
 

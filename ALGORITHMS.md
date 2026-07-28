@@ -1,0 +1,45 @@
+# The adaptive algorithms: ACO and Markov Chain
+
+`/aco` and `/mc` are this project's two adaptive, learned weighting mechanisms -- as opposed to the four NGINX built-ins (`rr`/`random`/`random2`/`leastconn`), which use either no information at all or only live instantaneous connection counts. Both `aco` and `mc` do the same job structurally: every sampling window, read that window's per-backend mean latency (TTFB), turn it into an integer weight (1-100) per backend, and hand that weight to NGINX as a `weight=N` on a plain weighted-round-robin upstream block. The *mechanism* NGINX executes is identical between them -- the only difference is which algorithm computed the weight and how. This file describes each algorithm's own internals and why each one was picked for this project specifically. See `README.md` for how they fit into the six-way comparison, and `FINDINGS.md` for which one actually wins under which conditions.
+
+## Ant Colony Optimization (ACO)
+
+### How it works
+
+ACO keeps one **pheromone** value per backend, persisted across windows (`controller/algorithms/aco.py`). Every sampling window, for every backend:
+
+1. **Evaporate first.** Multiply the backend's current pheromone by `(1 - EVAPORATION_RATE)` (default rate `0.1`, so 90% of the prior value survives each window). This is what gives the algorithm memory *and* lets it forget -- an old, no-longer-true signal fades out over several windows rather than lingering forever or vanishing instantly.
+2. **Then deposit.** Add `DEPOSIT_CONSTANT / latency_ms` to whatever's left after evaporation. A faster backend (lower latency) gets a bigger deposit -- direct translation of "reward the good path more."
+3. **Read weights off the pheromone table, scaled relative to the current max**, not the sum: `weight = 100 * pheromone / max(all pheromone values)`. The single best-performing backend always sits near weight 100; everyone else is scaled proportionally beneath it. (Scaling relative to the max instead of the sum is deliberate -- sum-based scaling gets coarser as the backend count grows, since each share shrinks toward `1/N`; max-relative scaling keeps the leader pinned near 100 no matter how many backends are in the pool.)
+
+The evaporate-then-deposit order matters: a window's own new observation isn't discounted by that same window's own decay step. And because evaporation only *decays* old pheromone rather than wiping it, a backend that was excellent for the last ten windows still has a real head start even if this window was a fluke -- the algorithm has **momentum**. That's the whole personality of ACO in one sentence: slow to forget, so it stays stable through noisy individual windows, but it lags behind a genuinely sudden shift in which backend is actually fastest right now, since old pheromone has to visibly decay before a new leader can catch up.
+
+### Why it was chosen
+
+- **The biological mechanism is a structural match for the problem, not just a metaphor.** Real ant colonies find efficient paths with no central map and no coordinator -- each ant makes a local decision based only on the pheromone it can currently sense, and the colony's collective behavior (converging on the shortest path) emerges from many independent, locally-informed choices plus a feedback loop (more traffic on a good path deposits more pheromone, which attracts more traffic). That's structurally the same shape as picking a backend with no global view of true queue depth or health -- a genuinely decentralized decision problem, not a coordination problem in disguise.
+- **It fits this project's original framing directly.** The longer-term motivation for this project (see `README.md`'s intro) is exploring decentralized, locally-informed decision-making in load balancing -- exactly the setting ACO's own mechanism was designed for. Picking an algorithm whose real-world origin is "make good decisions locally, with no central authority" is a deliberate fit, not a stretch.
+- **It gives a genuine, tunable memory dial with only two constants.** `EVAPORATION_RATE` and `DEPOSIT_CONSTANT` are the entire tuning surface, and they map directly onto an intuitive stability-vs-responsiveness tradeoff -- useful both as a real adaptive candidate and as one clear point on this project's experimental spectrum (see "What having both buys the project" below).
+- **It's an established technique being tested in a new context, not a novel invention for this project.** ACO is a well-studied metaheuristic with real prior use in network routing and other path-optimization problems -- applying it to backend selection is a natural extension, not a from-scratch design.
+
+## Markov Chain (MC)
+
+### How it works
+
+MC is rebuilt **completely from scratch every window** (`controller/algorithms/markov.py`) -- nothing persists between windows, in deliberate contrast to ACO's decaying pheromone table.
+
+1. **Score every backend from this window's latency alone**: `score = 1 / latency_ms` (faster backend, higher score) -- no history involved.
+2. **Build a transition matrix.** For every backend *i*, its row answers "if I'm currently sending traffic to *i*, what's the probability my next request goes to backend *j* instead?" -- computed by normalizing every *other* backend's score against each other (self-transitions are banned outright, `P[i][i] = 0`, so every row is forced to send you *somewhere else*, weighted toward whichever other backends were faster this window).
+3. **Find the matrix's stationary distribution** -- the long-run fraction of time an imaginary walker following those row-by-row probabilities forever would spend at each backend. Computed by power iteration: start from an even guess and repeatedly multiply through the matrix until it stops changing (capped at 200 iterations, or stops early once the change is negligible). This is the standard textbook way to get a stationary distribution without needing heavier linear algebra (eigendecomposition) -- overkill at the small backend counts this project uses.
+4. **Scale directly into a weight.** The stationary distribution already sums to 1 (a genuine probability distribution), so each backend's probability is multiplied by 100 and clamped to become its weight.
+
+No step here has a free parameter to tune -- unlike ACO's evaporation rate and deposit constant, MC's output is entirely determined by that window's observations. That's the whole personality of MC in one sentence: fully memoryless, so it reacts completely and immediately to whatever just happened, at the cost of being noisier -- a single unusual window swings the weights just as much as a real, lasting shift would, since there's no accumulated history to weigh it against.
+
+### Why it was chosen
+
+- **It's a deliberate foil to ACO, not an independent second idea.** The project's whole point in running two adaptive algorithms side by side is to isolate *memory* as an experimental variable -- both feed off the identical latency observations, both output a weight through the identical downstream mechanism (weighted round robin), so the only thing that differs between `/aco` and `/mc` is whether the algorithm accumulates history or not. Markov Chain is close to the cleanest possible "no memory at all" reference point to run that comparison against.
+- **It's mathematically principled and parameter-free.** A stationary distribution is a well-defined, rigorously grounded notion of "current preference" from probability theory -- there's no hand-tuned constant standing between the raw observations and the resulting weights, which makes it a trustworthy zero-smoothing baseline rather than an arbitrarily-tuned one.
+- **It gives an honest "instant reaction" data point.** Where ACO answers "what does the recent trend favor," Markov Chain answers "what does *right now* favor, and nothing else" -- a genuinely different question, useful precisely because it has no momentum to soften or delay its answer.
+
+## What having both buys the project
+
+Lined up against the four NGINX built-ins, `aco` and `mc` fill in the two ends of the "uses historical information" region of this project's information/memory-horizon ladder (see `README.md`, "The algorithms"): `rr`/`random` use no information at all; `random2`/`leastconn` use NGINX's own live, instantaneous state (current connection counts) with zero memory of anything before this instant; `mc` uses historical information (last window's observations) with no memory *across* windows; `aco` uses historical information *with* persistent, decaying memory across windows. Having both means the experiment isn't just "does a learned weight beat a static one" -- it's specifically able to ask whether *momentum* helps or hurts a learned weight, independent of whether learning helps at all. See `FINDINGS.md` for the answer that came out of running it: neither wins outright, and which one does depends on how fast the sampling tick is relative to how fast the environment actually changes, and how widely spread the backends' latencies are.

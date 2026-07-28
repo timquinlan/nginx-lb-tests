@@ -104,9 +104,9 @@ Compose volume was needed for this.
   best-performing adaptive algorithm (`aco`, `mc`) — same Mann-Whitney +
   bootstrap-CI machinery as the control comparisons below, just between
   those two specific algorithms instead of each-vs-`rr` (see `AGENT.md`,
-  "Phase 5"; which algorithm names count as "adaptive" is hardcoded as
-  `ADAPTIVE_ALGO_NAMES` in `analyze.py`, same reasoning as `CONTROL_ALGO`
-  below); then, for each non-control algorithm vs `rr` (the control —
+  "Analysis tooling"; which algorithm names count as "adaptive" is
+  hardcoded as `ADAPTIVE_ALGO_NAMES` in `analyze.py`, same reasoning as
+  `CONTROL_ALGO` below); then, for each non-control algorithm vs `rr` (the control —
   see `CONTROL_ALGO` in `analyze.py`):
   - a **Mann-Whitney U p-value** on the full TTFB samples — is the overall
     distribution different from the control at all, with no assumption

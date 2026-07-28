@@ -207,19 +207,10 @@ def main():
             "different unit than the sampling cadence underneath -- see AGENT.md."
         ),
     )
-    # Raised to 500rps/path (from 250, briefly from 125 before that) now
-    # that worker_processes is 4, not 1, with a `zone` directive on every
-    # upstream block (see AGENT.md, "Phase 6"). Verified live at
-    # 500rps/path (~3000rps aggregate across all six paths) with zero
-    # errors in any *.error.log and the controller container holding
-    # around 130% CPU -- well under the ~400% four fully-saturated workers
-    # could reach. 500rps/path also approximates a sustained ~1B-hits/month
-    # production load (double the ~500M/month the original 250 default was
-    # chosen to approximate, back when this project ran 3 paths on 1
-    # worker -- see AGENT.md). CPU-vs-rps is not assumed linear here (250
-    # measured separately at ~84-85% CPU, i.e. more than half of the
-    # 500rps/path figure) -- this is a directly-measured resting point,
-    # not an extrapolation.
+    # 500rps/path (~3000rps aggregate across all six paths) approximates a
+    # sustained ~1B-hits/month production load, validated live with zero
+    # errors in any *.error.log -- see AGENT.md, "NGINX process model: 4
+    # workers, shared zones", and README.md, "Choosing --rps".
     parser.add_argument("--rps", type=float, default=500, help="requests per second, per algorithm path (default 500)")
     parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
     args = parser.parse_args()
