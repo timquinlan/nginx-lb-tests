@@ -230,14 +230,25 @@ def main():
     # nothing about correctness depends on running faster than this. See
     # README.md, "Choosing --rps" for the full history of this default.
     parser.add_argument("--rps", type=float, default=40, help="requests per second, per algorithm path (default 40)")
+    # Default 10 minutes, changed from required-no-default on 2026-07-29.
+    # At the current --rps default (40/path), 10 minutes gives 24,000
+    # requests/path -- comfortably under BOOTSTRAP_MAX_SAMPLE (150000) in
+    # analysis/analyze.py, so the stats report always uses full, uncapped
+    # data at these defaults. Also long enough to avoid the "unlucky
+    # degradation schedule" effect confirmed the same day: a 5-minute run
+    # only samples a handful of each backend's independent degradation
+    # transitions, so its realized average condition (and even the
+    # aco-vs-mc ranking, normally a near-tie) can swing noticeably by
+    # chance in a way a 10+ minute run doesn't -- see EXPERIMENTS.md.
     parser.add_argument(
         "--duration",
         type=float,
-        required=True,
+        default=10,
         help=(
             "run duration in minutes (wall-clock, not ticks) -- internally converted to "
             "ceil(duration*60/tick) ticks, so the actual run covers at least the requested "
-            "duration and may run slightly longer if it doesn't divide evenly into whole ticks"
+            "duration and may run slightly longer if it doesn't divide evenly into whole ticks "
+            "(default 10)"
         ),
     )
     args = parser.parse_args()
