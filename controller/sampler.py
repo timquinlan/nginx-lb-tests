@@ -167,6 +167,21 @@ def run_priming(hosts):
         log("sampler", f"priming: {algo_name} weights={weights} change_count={change_count}")
 
 
+# Same retry-then-give-up-loudly shape as validate_backends.py's RETRIES/
+# RETRY_DELAY, applied to the ongoing per-window loop instead of just the
+# one-time startup gate -- validate_backends.py only ever runs once at
+# container boot, so it has zero protection against a transient failure
+# hitting this loop hours into a long-running container's life. Found
+# 2026-07-29: a backend container restart (to deploy an unrelated code
+# change) caused a brief DNS-resolution failure; aco's sampling thread hit
+# it inside direct_probe(), the uncaught exception killed the thread
+# outright, and its weights silently froze for the rest of the container's
+# life -- multiple experiment runs looked like static weighted round robin
+# with no visible error anywhere in their own output.
+WINDOW_RETRY_ATTEMPTS = 3
+WINDOW_RETRY_DELAY_SECONDS = 1.0
+
+
 def sampling_loop(algo_name, hosts):
     """Priming just computed and applied one full window's worth of
     weights. Sleeping a full tick before this loop's first iteration avoids
@@ -176,13 +191,35 @@ def sampling_loop(algo_name, hosts):
     time.sleep(TICK_SECONDS)
     while True:
         window_start = time.monotonic()
-        ip_to_host = write_ip_to_host_snapshot(hosts)
-        lines = read_new_window_lines(algo_name)
-        observations = parse_window_observations(lines, ip_to_host)
-        observations = fill_sparse_observations(observations, hosts)
-        weights = algorithm.update(observations)
-        change_count, _ = config_writer.apply_weights(algo_name, hosts, weights)
-        log("sampler", f"{algo_name}: window complete, {len(lines)} log line(s) seen, change_count={change_count}")
+        # Snapshot the log-read offset so a failed attempt can restore it
+        # before retrying -- read_new_window_lines() advances _log_offsets
+        # as a side effect, so retrying without resetting it first would
+        # have attempt 2 silently miss whatever lines attempt 1 already
+        # consumed before failing partway through.
+        offset_before_window = _log_offsets.get(algo_name, 0)
+        for attempt in range(1, WINDOW_RETRY_ATTEMPTS + 1):
+            try:
+                ip_to_host = write_ip_to_host_snapshot(hosts)
+                lines = read_new_window_lines(algo_name)
+                observations = parse_window_observations(lines, ip_to_host)
+                observations = fill_sparse_observations(observations, hosts)
+                weights = algorithm.update(observations)
+                change_count, _ = config_writer.apply_weights(algo_name, hosts, weights)
+                log("sampler", f"{algo_name}: window complete, {len(lines)} log line(s) seen, change_count={change_count}")
+                break
+            except Exception as e:
+                _log_offsets[algo_name] = offset_before_window
+                if attempt < WINDOW_RETRY_ATTEMPTS:
+                    log("sampler", f"{algo_name}: window failed on attempt {attempt}/{WINDOW_RETRY_ATTEMPTS} ({e!r}), retrying in {WINDOW_RETRY_DELAY_SECONDS}s")
+                    time.sleep(WINDOW_RETRY_DELAY_SECONDS)
+                else:
+                    # Fast stop: bounded, quick retries (~a few seconds total),
+                    # not a long/exponential backoff or an infinite retry --
+                    # give up on *this window* and let the next tick's fresh
+                    # attempt take another shot, rather than blocking this
+                    # thread indefinitely on a backend that may be genuinely,
+                    # persistently down.
+                    log("sampler", f"{algo_name}: window failed after {WINDOW_RETRY_ATTEMPTS} attempts ({e!r}) -- giving up on this window, will try fresh next tick")
         elapsed = time.monotonic() - window_start
         time.sleep(max(0.0, TICK_SECONDS - elapsed))
 

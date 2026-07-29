@@ -45,6 +45,7 @@ from common import (
 )
 import config_writer
 import sampler
+import validate_backends
 
 REQUEST_TIMEOUT_SECONDS = 10
 MIN_WORKERS_PER_PATH = 20
@@ -211,7 +212,19 @@ def run(tick_seconds, rps, duration_minutes, contention):
     # rounds the actual run slightly long, never short.
     duration_ticks = math.ceil((duration_minutes * 60.0) / tick_seconds)
 
+    # Reuses validate_backends.py rather than re-implementing the check --
+    # same module entrypoint.py and sampler.py already call at container
+    # startup, just invoked again here since a backend can go unreachable
+    # hours into a long-running container's life (a restart, a network
+    # blip) and this run's own traffic/contention-probe phase deserves the
+    # same loud, actionable failure a startup-time outage would get,
+    # rather than silently generating a run's worth of broken data.
     hosts = read_upstream_hosts()
+    unreachable = validate_backends.validate(hosts)
+    if unreachable:
+        validate_backends.print_failure_report(hosts, unreachable)
+        sys.exit(1)
+
     contention_limit, contention_rho, contention_probe_w_ms = apply_contention_level(hosts, paths, rps, contention)
 
     run_index = next_run_index()
