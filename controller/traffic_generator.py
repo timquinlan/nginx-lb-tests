@@ -14,6 +14,7 @@ import argparse
 import datetime
 import http.client
 import json
+import math
 import os
 import signal
 import sys
@@ -119,11 +120,19 @@ def invoke_analysis(run_index):
         log("traffic_generator", f"Phase 4 analysis failed for run {run_index}: {e}")
 
 
-def run(tick_seconds, rps, duration_ticks):
+def run(tick_seconds, rps, duration_minutes):
     paths = read_location_paths()
     if not paths:
         log("traffic_generator", "no location paths found in generated NGINX config -- nothing to send traffic to")
         sys.exit(1)
+
+    # --duration is specified in minutes (the actual wall-clock length of
+    # the run); ticks are just the sleep-loop's internal unit, so convert
+    # here rather than making the caller do tick arithmetic. ceil, not
+    # round, so the run always covers *at least* the requested duration --
+    # a requested duration that isn't a whole multiple of tick_seconds
+    # rounds the actual run slightly long, never short.
+    duration_ticks = math.ceil((duration_minutes * 60.0) / tick_seconds)
 
     run_index = next_run_index()
     total_duration_seconds = tick_seconds * duration_ticks
@@ -131,7 +140,8 @@ def run(tick_seconds, rps, duration_ticks):
     start_monotonic = time.monotonic()
     baseline_change_counts = current_change_counts()
 
-    log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path duration={duration_ticks} ticks ({total_duration_seconds}s)")
+    log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path "
+        f"requested_duration={duration_minutes}min -> {duration_ticks} ticks ({total_duration_seconds}s actual)")
 
     workers_per_path = max(MIN_WORKERS_PER_PATH, int(rps * WORKERS_PER_REQUESTED_RPS))
     log("traffic_generator", f"sizing thread pool at {workers_per_path} workers/path for {rps}rps/path")
@@ -180,6 +190,7 @@ def run(tick_seconds, rps, duration_ticks):
         "end_ts_ms": end_ts_ms,
         "tick_seconds": tick_seconds,
         "rps_per_path": rps,
+        "requested_duration_minutes": duration_minutes,
         "planned_duration_ticks": duration_ticks,
         "actual_duration_s": round(actual_duration_s, 3),
         "paths": paths,
@@ -207,15 +218,31 @@ def main():
             "different unit than the sampling cadence underneath -- see AGENT.md."
         ),
     )
-    # 500rps/path (~3000rps aggregate across all six paths) approximates a
-    # sustained ~1B-hits/month production load, validated live with zero
-    # errors in any *.error.log -- see AGENT.md, "NGINX process model: 4
-    # workers, shared zones", and README.md, "Choosing --rps".
-    parser.add_argument("--rps", type=float, default=500, help="requests per second, per algorithm path (default 500)")
-    parser.add_argument("--duration", type=int, required=True, help="run duration, in ticks")
+    # 40rps/path (~240rps aggregate across all six paths), changed from 500
+    # on 2026-07-29, deliberately conservative to keep backend contention
+    # off the table as a confound -- the parallel-run comparison that day
+    # (500rps vs 50rps/path) found no evidence that higher rps was
+    # distorting results, but 40rps/path was picked as the new default
+    # anyway to stay comfortably low rather than lean on that headroom.
+    # Also the base of that day's same-total-volume series (40rps/60min,
+    # 80rps/30min, 160rps/15min, 240rps/10min -- all 144k requests/path),
+    # where p99-vs-rr significance held at every point on that series, so
+    # nothing about correctness depends on running faster than this. See
+    # README.md, "Choosing --rps" for the full history of this default.
+    parser.add_argument("--rps", type=float, default=40, help="requests per second, per algorithm path (default 40)")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        required=True,
+        help=(
+            "run duration in minutes (wall-clock, not ticks) -- internally converted to "
+            "ceil(duration*60/tick) ticks, so the actual run covers at least the requested "
+            "duration and may run slightly longer if it doesn't divide evenly into whole ticks"
+        ),
+    )
     args = parser.parse_args()
 
-    run(tick_seconds=args.tick, rps=args.rps, duration_ticks=args.duration)
+    run(tick_seconds=args.tick, rps=args.rps, duration_minutes=args.duration)
 
 
 if __name__ == "__main__":

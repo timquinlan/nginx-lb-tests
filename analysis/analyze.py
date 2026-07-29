@@ -63,12 +63,23 @@ SIGNIFICANCE_ALPHA = 0.05
 # log lines). BOOTSTRAP_MAX_SAMPLE caps how much data actually goes into
 # that resampling, independent of the point estimates and Mann-Whitney
 # test above (both of which run on the true full sample regardless of
-# size -- see log_reader.capped_sample). 5000 obs/side x 2000 resamples
-# was measured at a few seconds per algorithm-vs-control comparison; raise
-# BOOTSTRAP_MAX_SAMPLE for a tighter CI on a real run if that's still fast
-# enough on your hardware, or lower it if it isn't.
+# size -- see log_reader.capped_sample).
+#
+# Raised from 5000 to 150000 (2026-07-29) after directly comparing both on
+# the same real-run data: at 5000 obs/side, p99 CIs were 37-45ms wide and
+# one comparison (mc vs rr) missed significance outright; uncapped at
+# ~144k obs/side (the full sample for a 144k-request run), the same
+# comparisons came back 6-9ms wide with the identical point estimates and
+# that missed case now significant. The 5000 cap wasn't "good enough,
+# just faster" -- it was materially widening the reported uncertainty.
+# Cost: a full stats report (5-6 comparisons) at 150000 obs/side x 2000
+# resamples took ~10-11 minutes of CPU on a real ~144k-request run, versus
+# a few seconds at the old 5000 cap. That cost lands on every run's
+# automatic end-of-run analysis (see traffic_generator.py's invoke_analysis),
+# not just manual reruns -- lower BOOTSTRAP_MAX_SAMPLE (or pass
+# --max-bootstrap-sample) if that's too slow for your hardware/workflow.
 BOOTSTRAP_RESAMPLES = 2000
-BOOTSTRAP_MAX_SAMPLE = 5000
+BOOTSTRAP_MAX_SAMPLE = 150000
 
 
 def ms_to_iso(ts_ms):
@@ -524,8 +535,11 @@ def main():
         default=BOOTSTRAP_MAX_SAMPLE,
         help=(
             f"cap on observations/side used for bootstrap resampling only (point estimates and the "
-            f"Mann-Whitney test always use the full sample); default {BOOTSTRAP_MAX_SAMPLE}. Keeps "
-            "bootstrap compute bounded on a much longer real experiment -- see AGENT.md."
+            f"Mann-Whitney test always use the full sample); default {BOOTSTRAP_MAX_SAMPLE}, chosen "
+            "over a smaller cap because it measurably tightens the CI (a 5000-obs cap gave 37-45ms-wide "
+            "p99 CIs and one missed-significance case on a real run; 150000 gave 6-9ms-wide CIs on the "
+            "same data with identical point estimates). Costs ~10-11 min of CPU for a full stats report "
+            "at this default on a ~144k-request run -- lower this for a faster/looser report."
         ),
     )
     args = parser.parse_args()

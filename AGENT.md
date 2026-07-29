@@ -33,8 +33,10 @@ Controller and backend containers are both Python (stdlib-heavy, no frameworks).
 **The traffic generator is invoked manually, per run:**
 
 ```sh
-docker exec <controller-container> python3 traffic_generator.py --tick 60 --rps 5 --duration 10
+docker exec <controller-container> python3 traffic_generator.py --rps 5 --duration 10
 ```
+
+`--duration` is in minutes (wall-clock), not ticks -- the script converts it internally to `ceil(duration*60/tick)` ticks, so a 10-minute run is just `--duration 10` regardless of `--tick`, instead of having to compute tick-count by hand.
 
 This is why `runs.log` isolates multiple runs by start/end timestamp — the setup above happens once per container lifecycle; the operator can invoke additional traffic-generator runs against the same primed, continuously-adapting NGINX without restarting anything.
 

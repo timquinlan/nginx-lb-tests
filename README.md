@@ -10,9 +10,9 @@ See `ALGORITHMS.md` for how ACO and Markov Chain each work and why they were pic
 
 ```sh
 docker compose -f docker-compose.full.yml up --build -d
-# the time of the test is tick * duration, for a 10 minute test use --tick 10 --duration 60
+# --duration is in minutes (wall-clock), not ticks
 docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
-  python3 traffic_generator.py --tick 10 --rps 100 --duration 6   # one minute smoke test
+  python3 traffic_generator.py --rps 100 --duration 1   # one minute smoke test
 ```
 
 That builds and starts the controller plus the local backend pool (validates backends, generates NGINX config, primes `/aco`/`/mc` with equal weights), then runs a short traffic burst against all six paths. Results (stdout summary, PNG charts, text stats report) land in `./logs/analysis/`. See "Running an experiment" below for real (non-smoke-test) defaults, re-analyzing a past run, and pointing at external backends instead of the local pool.
@@ -103,7 +103,7 @@ This validates backends, generates NGINX config, primes `/aco` and `/mc` with eq
 
 ```sh
 docker exec -it $(docker compose -f docker-compose.full.yml ps -q controller) \
-  python3 traffic_generator.py --tick 5 --rps 5 --duration 4   # smoke test: 5s tick, ~20s total, --rps explicit (default is now 500, see below)
+  python3 traffic_generator.py --rps 5 --duration 0.5   # smoke test: ~30s total, --rps explicit (default is now 500, see below)
 ```
 
 Run it again (with different `--tick`/`--rps`/`--duration`) as many times as you like against the same container -- each run appends its own record to `runs.log`. See `AGENT.md` for why setup and traffic generation are split this way.
@@ -137,7 +137,7 @@ Only run one of these two Compose files at a time from this directory -- they sh
 
 ## Choosing `--rps`
 
-**Default is 500** (per algorithm path, ~3000 aggregate across all six paths) -- approximates a sustained ~1B-hits/month production load, validated with zero `worker_connections` warnings or errors in any `*.error.log`. See `AGENT.md`, "NGINX process model: 4 workers, shared zones," for the underlying CPU/throughput mechanics.
+**Default is 40** (per algorithm path, ~240 aggregate across all six paths), changed from 500 on 2026-07-29 -- deliberately conservative to keep backend contention off the table as a confound, even though a same-day contention check (500rps vs. 50rps parallel) found no evidence that higher rps was distorting results against the adaptive algorithms. 40rps/path is also the base of that day's same-total-volume series (40rps/60min, 80rps/30min, 160rps/15min, 240rps/10min -- all 144k requests/path), where p99-vs-`rr` significance held at every point on the series, so nothing about correctness depends on running faster than this default. The older 500rps default was chosen to approximate a sustained ~1B-hits/month production load and was validated with zero `worker_connections` warnings or errors in any `*.error.log` -- still true at 500, just no longer the default. See `AGENT.md`, "NGINX process model: 4 workers, shared zones," for the underlying CPU/throughput mechanics.
 
 For a quick plumbing smoke test where realism doesn't matter, pass a low `--rps` explicitly (e.g. `--rps 5`).
 

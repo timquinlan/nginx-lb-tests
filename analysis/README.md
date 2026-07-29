@@ -37,8 +37,11 @@ $msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time 
 
 **`runs.log`** — JSON Lines, one object per traffic-generator invocation:
 `run_index`, `start_ts_ms`, `end_ts_ms`, `tick_seconds`, `rps_per_path`,
-`planned_duration_ticks`, `actual_duration_s`, `paths`, `change_counts`,
-`interrupted`. Multiple runs append to the same access log files —
+`requested_duration_minutes` (what `--duration` asked for, in minutes),
+`planned_duration_ticks` (the actual tick count that got derived from it —
+`ceil(requested_duration_minutes*60/tick_seconds)`), `actual_duration_s`,
+`paths`, `change_counts`, `interrupted`. Multiple runs append to the same
+access log files —
 **`start_ts_ms`/`end_ts_ms` are the only thing that separates one run's
 requests from another's afterward.**
 
