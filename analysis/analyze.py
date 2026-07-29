@@ -86,6 +86,21 @@ def ms_to_iso(ts_ms):
     return datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def contention_summary(run):
+    """Formats the backend-contention-cap fields traffic_generator.py's
+    --contention flag writes into a run record (see EXPERIMENTS.md,
+    "Backend contention / the many-LB problem"). .get()-based throughout --
+    runs recorded before this flag existed have none of these keys, and
+    should just read as "off" rather than raising."""
+    level = run.get("contention_level", "off")
+    limit = run.get("contention_limit_per_backend")
+    if limit is None:
+        return level
+    rho = run.get("contention_rho_target")
+    w_ms = run.get("contention_probe_w_ms")
+    return f"{level} (limit={limit}/backend, rho_target={rho}, probed_w={w_ms}ms)"
+
+
 def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_host):
     access_log_path = os.path.join(logs_dir, f"{algo}{common.ACCESS_LOG_SUFFIX}")
     records = common.parse_access_log(access_log_path, start_ts_ms, end_ts_ms, ip_to_host)
@@ -156,6 +171,7 @@ def print_summary(run, per_algo, window_seconds, window_seconds_overridden, ip_t
     print(
         f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
         f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
+        f"contention={contention_summary(run)}  "
         f"interrupted={run.get('interrupted', False)}"
     )
     source = "--window-seconds override" if window_seconds_overridden else "this run's tick_seconds (see AGENT.md: assumes --tick matched the container's TICK_SECONDS)"
@@ -257,7 +273,8 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
     lines.append(f"window:  {ms_to_iso(run['start_ts_ms'])}  ->  {ms_to_iso(run['end_ts_ms'])}")
     lines.append(
         f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
-        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s"
+        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
+        f"contention={contention_summary(run)}"
     )
     lines.append("")
 

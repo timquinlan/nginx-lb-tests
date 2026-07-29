@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 todo
+.DS_Store
 
 # Bind-mounted runtime data (generated NGINX confs, experiment logs) --
 # regenerated/produced at container startup and by each run, not source.

@@ -35,13 +35,16 @@ from common import (
     log,
     now_ms,
     read_location_paths,
+    read_upstream_hosts,
     NGINX_EXPERIMENT_PORT,
+    BACKEND_PORT,
     RUNS_LOG_PATH,
     LOG_DIR,
     DYNAMIC_ALGO_NAMES,
     TICK_SECONDS,
 )
 import config_writer
+import sampler
 
 REQUEST_TIMEOUT_SECONDS = 10
 MIN_WORKERS_PER_PATH = 20
@@ -53,6 +56,80 @@ MIN_WORKERS_PER_PATH = 20
 # queues faster than it drains, so the achieved rate quietly falls short
 # of what was requested instead of failing loudly.
 WORKERS_PER_REQUESTED_RPS = 0.5
+
+# Contention-cap presets (see EXPERIMENTS.md, "Backend contention / the
+# many-LB problem"). Deliberately mild-to-moderate, not extreme -- the
+# leastconn/aco/mc means are already close, so a little shared-backend
+# pressure should be enough to separate them without risking an unstable
+# queue (rho must stay < 1; see the math in EXPERIMENTS.md for why "off"
+# is None, not just a very high number -- None means the backend's
+# capacity gate stays fully unbounded, identical to today's behavior).
+CONTENTION_RHO_TARGETS = {
+    "off": None,
+    "mild": 0.8,
+    "moderate": 0.9,
+}
+CAPACITY_PROBE_TIMEOUT_SECONDS = 5
+
+
+def _post_capacity(host, limit):
+    """Direct-to-backend admin call (bypasses NGINX, same as sampler.py's
+    direct_probe) -- sets backend `host`'s concurrency cap. limit=None
+    means unlimited. Best-effort: a single unreachable backend shouldn't
+    abort the whole run, but it does mean that backend won't have the
+    intended cap -- logged loudly so it isn't silently wrong."""
+    body = json.dumps({"limit": limit}).encode("utf-8")
+    try:
+        conn = http.client.HTTPConnection(host, BACKEND_PORT, timeout=CAPACITY_PROBE_TIMEOUT_SECONDS)
+        try:
+            conn.request("POST", "/admin/capacity", body=body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            resp.read()
+            if resp.status != 200:
+                log("traffic_generator", f"WARNING: {host} rejected capacity={limit} (HTTP {resp.status})")
+        finally:
+            conn.close()
+    except OSError as e:
+        log("traffic_generator", f"WARNING: couldn't set capacity={limit} on {host}: {e}")
+
+
+def apply_contention_level(hosts, paths, rps, level):
+    """Resets every backend to unlimited, then (unless level is "off")
+    probes current per-backend latency directly, sizes a concurrency cap
+    via Little's Law at the requested utilization target, and pushes it to
+    every backend. Always resets to unlimited first, even for "off" --
+    otherwise a prior run's cap would silently carry over into a run that
+    never asked for one. Returns (limit, rho_target, probe_w_ms) for the
+    run record; limit/probe_w_ms are None when level is "off"."""
+    for host in hosts:
+        _post_capacity(host, None)
+
+    rho_target = CONTENTION_RHO_TARGETS[level]
+    if rho_target is None:
+        return None, None, None
+
+    # One direct probe per backend, right after the unlimited reset above,
+    # so this reflects real current backend conditions (base latency +
+    # whatever degradation offset is active right now) unconstrained by
+    # any leftover cap from a previous run -- same probe mechanism
+    # sampler.py's priming step already uses.
+    probe_latencies_ms = [sampler.direct_probe(host) for host in hosts]
+    avg_w_ms = sum(probe_latencies_ms) / len(probe_latencies_ms)
+
+    lambda_backend = (rps * len(paths)) / len(hosts)
+    natural_concurrency_l = lambda_backend * (avg_w_ms / 1000.0)
+    limit = max(1, math.ceil(natural_concurrency_l / rho_target))
+
+    log(
+        "traffic_generator",
+        f"contention={level}: probed avg backend latency={avg_w_ms:.1f}ms, "
+        f"lambda_backend={lambda_backend:.1f}rps, natural concurrency L={natural_concurrency_l:.1f}, "
+        f"rho_target={rho_target} -> capacity limit={limit}/backend",
+    )
+    for host in hosts:
+        _post_capacity(host, limit)
+
+    return limit, rho_target, round(avg_w_ms, 1)
 
 
 def send_request(path):
@@ -120,7 +197,7 @@ def invoke_analysis(run_index):
         log("traffic_generator", f"Phase 4 analysis failed for run {run_index}: {e}")
 
 
-def run(tick_seconds, rps, duration_minutes):
+def run(tick_seconds, rps, duration_minutes, contention):
     paths = read_location_paths()
     if not paths:
         log("traffic_generator", "no location paths found in generated NGINX config -- nothing to send traffic to")
@@ -134,6 +211,9 @@ def run(tick_seconds, rps, duration_minutes):
     # rounds the actual run slightly long, never short.
     duration_ticks = math.ceil((duration_minutes * 60.0) / tick_seconds)
 
+    hosts = read_upstream_hosts()
+    contention_limit, contention_rho, contention_probe_w_ms = apply_contention_level(hosts, paths, rps, contention)
+
     run_index = next_run_index()
     total_duration_seconds = tick_seconds * duration_ticks
     start_ts_ms = now_ms()
@@ -141,7 +221,8 @@ def run(tick_seconds, rps, duration_minutes):
     baseline_change_counts = current_change_counts()
 
     log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path "
-        f"requested_duration={duration_minutes}min -> {duration_ticks} ticks ({total_duration_seconds}s actual)")
+        f"requested_duration={duration_minutes}min -> {duration_ticks} ticks ({total_duration_seconds}s actual) "
+        f"contention={contention} (limit={contention_limit})")
 
     workers_per_path = max(MIN_WORKERS_PER_PATH, int(rps * WORKERS_PER_REQUESTED_RPS))
     log("traffic_generator", f"sizing thread pool at {workers_per_path} workers/path for {rps}rps/path")
@@ -196,6 +277,10 @@ def run(tick_seconds, rps, duration_minutes):
         "paths": paths,
         "change_counts": current_change_counts(),
         "interrupted": interrupted,
+        "contention_level": contention,
+        "contention_limit_per_backend": contention_limit,
+        "contention_rho_target": contention_rho,
+        "contention_probe_w_ms": contention_probe_w_ms,
     }
     write_run_record(record)
     log("traffic_generator", f"run {run_index} finished, wrote record to {RUNS_LOG_PATH}")
@@ -251,9 +336,21 @@ def main():
             "(default 10)"
         ),
     )
+    parser.add_argument(
+        "--contention",
+        choices=sorted(CONTENTION_RHO_TARGETS.keys()),
+        default="off",
+        help=(
+            "backend concurrency-cap level (default off, unlimited -- today's behavior, "
+            "unchanged). 'mild'/'moderate' probe each backend's current latency directly, "
+            "size a per-backend concurrency cap via Little's Law at a target utilization "
+            "(rho=0.8/0.9) for this run's actual --rps, and push it to every backend before "
+            "sending traffic -- see EXPERIMENTS.md, 'Backend contention / the many-LB problem'."
+        ),
+    )
     args = parser.parse_args()
 
-    run(tick_seconds=args.tick, rps=args.rps, duration_minutes=args.duration)
+    run(tick_seconds=args.tick, rps=args.rps, duration_minutes=args.duration, contention=args.contention)
 
 
 if __name__ == "__main__":
