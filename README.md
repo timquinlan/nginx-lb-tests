@@ -4,7 +4,7 @@ A load balancing experiment: compares multiple upstream-selection algorithms run
 
 The primary contribution isn't the experiment result itself (which algorithm "wins") -- it's the experimentation *methodology*: a reproducible framework for measuring performance differences between upstream-selection algorithms, with analysis tooling specific enough to work out of the box against this project's log format but simple enough to adapt to a different algorithm or log schema. Longer-term framing: a paper/talk on ACO-inspired load balancing more generally -- ant colony behavior is inherently decentralized and locally-informed, an interesting property to explore in its own right, independent of any particular deployment target.
 
-See `ALGORITHMS.md` for how ACO and Markov Chain each work and why they were picked. See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
+See `ALGORITHMS.md` for how ACO and Markov Chain each work and why they were picked. See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `EXPERIMENTS.md` for what's worth trying next -- knobs to push, ideas not yet built, and the math behind each. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
 
 ## Quick start
 
