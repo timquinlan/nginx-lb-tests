@@ -42,6 +42,7 @@ from common import (
     LOG_DIR,
     DYNAMIC_ALGO_NAMES,
     TICK_SECONDS,
+    DEPLOY_MODE,
 )
 import config_writer
 import sampler
@@ -59,18 +60,34 @@ MIN_WORKERS_PER_PATH = 20
 WORKERS_PER_REQUESTED_RPS = 0.5
 
 # Contention-cap presets (see EXPERIMENTS.md, "Backend contention / the
-# many-LB problem"). Deliberately mild-to-moderate, not extreme -- the
+# many-LB problem"). Deliberately mild-to-heavy, not unstable -- the
 # leastconn/aco/mc means are already close, so a little shared-backend
 # pressure should be enough to separate them without risking an unstable
 # queue (rho must stay < 1; see the math in EXPERIMENTS.md for why "off"
 # is None, not just a very high number -- None means the backend's
 # capacity gate stays fully unbounded, identical to today's behavior).
+# "heavy" (rho=0.95) is deliberately still < 1, not a step towards the
+# unstable/burst-pause territory EXPERIMENTS.md describes separately --
+# queueing delay grows sharply as rho->1 even while staying stable, so
+# this is already a meaningfully harder squeeze than "moderate" without
+# risking the runaway-backlog failure mode.
 CONTENTION_RHO_TARGETS = {
     "off": None,
     "mild": 0.8,
     "moderate": 0.9,
+    "heavy": 0.95,
 }
 CAPACITY_PROBE_TIMEOUT_SECONDS = 5
+# A single probe/backend was noisy enough to occasionally collide two
+# different levels onto the same computed N -- found 2026-07-29: mild
+# (rho=0.8) and moderate (rho=0.9) landed on the identical N=23 because
+# moderate's one probe happened to catch a slower moment (424.7ms vs
+# mild's 374.9ms), and the two effects canceled out. Averaging several
+# probes/backend smooths out that per-request latency noise (each probe
+# draws its own independent base-latency sample even within the same
+# degradation-offset state) so the mild/moderate/heavy ladder reliably
+# reflects its intended rho targets instead of occasionally coinciding.
+CAPACITY_PROBE_ROUNDS = 3
 
 
 def _post_capacity(host, limit):
@@ -101,7 +118,32 @@ def apply_contention_level(hosts, paths, rps, level):
     every backend. Always resets to unlimited first, even for "off" --
     otherwise a prior run's cap would silently carry over into a run that
     never asked for one. Returns (limit, rho_target, probe_w_ms) for the
-    run record; limit/probe_w_ms are None when level is "off"."""
+    run record; limit/probe_w_ms are None when level is "off".
+
+    The /admin/capacity endpoint only exists on this project's own
+    simulated backends (backend/server.py) -- DEPLOY_MODE=external points
+    at real hosts that don't have it. Found 2026-07-29: without this
+    check, a real backend would just 404 the POST (logged as a warning,
+    not fatal) and the run would proceed anyway, writing a run record that
+    claims contention was applied when nothing was -- misleading, not just
+    silently inert. So: "off" against external is a no-op (skip the
+    reset-push entirely, no point 404ing on every single run regardless of
+    whether contention was ever requested); anything else against
+    external refuses to start the run at all, same fail-loud philosophy as
+    validate_backends.py rather than quietly downgrading to "off"."""
+    if DEPLOY_MODE != "full":
+        if level == "off":
+            return None, None, None
+        log(
+            "traffic_generator",
+            f"ERROR: --contention {level} requires DEPLOY_MODE=full (this project's own simulated "
+            f"backends, which have the /admin/capacity endpoint) -- current DEPLOY_MODE={DEPLOY_MODE!r} "
+            "points at real external hosts that don't support it. Refusing to start a run that would "
+            "silently record contention settings that were never actually applied. Use --contention off "
+            "(or omit the flag) against external backends.",
+        )
+        sys.exit(1)
+
     for host in hosts:
         _post_capacity(host, None)
 
@@ -109,12 +151,16 @@ def apply_contention_level(hosts, paths, rps, level):
     if rho_target is None:
         return None, None, None
 
-    # One direct probe per backend, right after the unlimited reset above,
-    # so this reflects real current backend conditions (base latency +
-    # whatever degradation offset is active right now) unconstrained by
-    # any leftover cap from a previous run -- same probe mechanism
-    # sampler.py's priming step already uses.
-    probe_latencies_ms = [sampler.direct_probe(host) for host in hosts]
+    # CAPACITY_PROBE_ROUNDS direct probes per backend (not just one), right
+    # after the unlimited reset above, so this reflects real current
+    # backend conditions (base latency + whatever degradation offset is
+    # active right now) unconstrained by any leftover cap from a previous
+    # run -- same probe mechanism sampler.py's priming step uses, just
+    # repeated and averaged for a more stable W estimate (see
+    # CAPACITY_PROBE_ROUNDS' comment for why one probe wasn't enough).
+    probe_latencies_ms = [
+        sampler.direct_probe(host) for host in hosts for _ in range(CAPACITY_PROBE_ROUNDS)
+    ]
     avg_w_ms = sum(probe_latencies_ms) / len(probe_latencies_ms)
 
     lambda_backend = (rps * len(paths)) / len(hosts)
@@ -123,7 +169,8 @@ def apply_contention_level(hosts, paths, rps, level):
 
     log(
         "traffic_generator",
-        f"contention={level}: probed avg backend latency={avg_w_ms:.1f}ms, "
+        f"contention={level}: probed avg backend latency={avg_w_ms:.1f}ms "
+        f"({CAPACITY_PROBE_ROUNDS} probes/backend x {len(hosts)} backends), "
         f"lambda_backend={lambda_backend:.1f}rps, natural concurrency L={natural_concurrency_l:.1f}, "
         f"rho_target={rho_target} -> capacity limit={limit}/backend",
     )
@@ -355,10 +402,14 @@ def main():
         default="off",
         help=(
             "backend concurrency-cap level (default off, unlimited -- today's behavior, "
-            "unchanged). 'mild'/'moderate' probe each backend's current latency directly, "
+            "unchanged). 'mild'/'moderate'/'heavy' probe each backend's current latency directly, "
             "size a per-backend concurrency cap via Little's Law at a target utilization "
-            "(rho=0.8/0.9) for this run's actual --rps, and push it to every backend before "
-            "sending traffic -- see EXPERIMENTS.md, 'Backend contention / the many-LB problem'."
+            "(rho=0.8/0.9/0.95) for this run's actual --rps, and push it to every backend before "
+            "sending traffic -- see EXPERIMENTS.md, 'Backend contention / the many-LB problem'. "
+            "FULL MODE (DEPLOY_MODE=full) ONLY -- the underlying /admin/capacity endpoint only "
+            "exists on this project's own simulated backends; against DEPLOY_MODE=external (real "
+            "hosts), anything other than 'off' refuses to start the run rather than silently "
+            "recording contention settings that were never actually applied."
         ),
     )
     args = parser.parse_args()

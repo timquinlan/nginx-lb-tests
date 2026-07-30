@@ -133,6 +133,8 @@ docker compose -f docker-compose.controller.yml up --build -d
 
 Startup still runs the same fail-fast backend validation as `docker-compose.full.yml` (see "How it works" above) -- if a listed host isn't reachable on `BACKEND_PORT`, the container exits with an actionable error naming which host failed, rather than starting half-broken. `DEPLOY_MODE=external` also switches NGINX's `resolver` directive to a public DNS (`8.8.8.8`) instead of Docker's embedded one (`127.0.0.11`), since there's no Docker-internal DNS to resolve real external hostnames.
 
+**Backend latency/degradation simulation and `traffic_generator.py --contention` don't apply here.** `LATENCY_MIN_MS`/`DEGRADATION_*` are env vars on this project's own simulated backend containers (`backend/server.py`, `docker-compose.full.yml`) -- your real hosts just behave however they actually behave, nothing to configure on this project's side. `--contention mild`/`moderate` specifically depends on an admin endpoint that only exists on those simulated backends; run it against `DEPLOY_MODE=external` and it refuses to start rather than silently doing nothing while claiming it worked (`--contention off`, the default, is unaffected either way). See `EXPERIMENTS.md`, "Backend contention / the many-LB problem," for the full mechanism.
+
 Only run one of these two Compose files at a time from this directory -- they share a Docker Compose project name (and volumes) by design, so bring one down (`docker compose -f <file> down`) before starting the other.
 
 ## Choosing `--rps`
