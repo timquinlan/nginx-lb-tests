@@ -40,7 +40,14 @@ $msec | $uri | $upstream_addr | $upstream_response_time | $upstream_header_time 
 `requested_duration_minutes` (what `--duration` asked for, in minutes),
 `planned_duration_ticks` (the actual tick count that got derived from it —
 `ceil(requested_duration_minutes*60/tick_seconds)`), `actual_duration_s`,
-`paths`, `change_counts`, `interrupted`. Multiple runs append to the same
+`paths`, `change_counts`, `interrupted`, `contention_level`,
+`contention_limit_per_backend`, `contention_rho_target`,
+`contention_probe_w_ms` (see EXPERIMENTS.md, "Backend contention / the many-LB
+problem"), `contention_blocked_request_pct` (% of backend requests this run
+that actually had to wait on the concurrency cap, aggregated across
+backends — null when contention is off or DEPLOY_MODE=external),
+`contention_stats_by_backend` (the same, per backend, straight from each
+backend's `/admin/capacity` GET). Multiple runs append to the same
 access log files —
 **`start_ts_ms`/`end_ts_ms` are the only thing that separates one run's
 requests from another's afterward.**

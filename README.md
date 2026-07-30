@@ -118,6 +118,17 @@ python3 analysis/analyze.py --run 3          # from the host, against ./logs
 
 **On short smoke-test runs, expect the stats report to say "not statistically significant" everywhere** -- a few thousand requests over tens of seconds usually isn't enough to separate real algorithm differences from noise, especially against backends with deliberately overlapping latency ranges. That's the correct, expected answer at this scale, not a sign anything is broken -- see `analysis/README.md`.
 
+## `traffic_generator.py` CLI options
+
+Every flag also has full help text via `python3 traffic_generator.py --help`, which is the authoritative, always-current source (argparse). This table is a quick-reference index into the deeper discussion elsewhere in the docs:
+
+| Flag | Default | What it does | Deep dive |
+|---|---|---|---|
+| `--rps` | `40` | Requests per second, **per algorithm path** (so `40` means ~240/s aggregate across all six paths). | "Choosing `--rps`" below |
+| `--duration` | `10` | Run length in **minutes**, wall-clock -- internally converted to `ceil(duration*60/tick)` ticks. | "Quick start" above; `AGENT.md`, "Entrypoint / orchestration model" |
+| `--tick` | this container's `TICK_SECONDS` (10s) | Only controls *this invocation's* status-line cadence and duration accounting -- does not change the already-running sampling loops' window size (that's fixed at container boot). Leave unset unless you deliberately want the two to diverge. | "Choosing `--tick`" above; `AGENT.md`, "Entrypoint / orchestration model" |
+| `--contention` | `off` | Backend concurrency-cap level (`off`/`mild`/`moderate`/`heavy`) -- sizes a per-backend cap via Little's Law and pushes it live before traffic starts. **`DEPLOY_MODE=full` only**; refuses to start against external backends for any level other than `off`. | `EXPERIMENTS.md`, "Backend contention / the many-LB problem" |
+
 ## Controller-only mode (real backends instead of the simulation)
 
 `docker-compose.full.yml` builds and starts its own backend containers with synthetic, controllable latency (the "Backend pool" table above) -- that's what every result in `FINDINGS.md` is measured against, and it's the right choice for reproducing this project's own experiments. `docker-compose.controller.yml` is the other half: it starts **only** the controller (NGINX + the Python scripts), pointed at whatever real hosts you list, with no backend containers built at all. Use it to run the same six-algorithm comparison against actual infrastructure -- real servers, cloud VMs, another team's staging fleet -- instead of the simulation, e.g. to sanity-check whether the simulated results hold up against real-world latency behavior, or to just use this project as a genuine load-balancing algorithm comparison tool for a backend pool you actually run.

@@ -111,6 +111,55 @@ def _post_capacity(host, limit):
         log("traffic_generator", f"WARNING: couldn't set capacity={limit} on {host}: {e}")
 
 
+def _get_capacity_stats(host):
+    """GET counterpart to _post_capacity -- fetches AdjustableLimiter.stats()
+    from `host` (limit, total acquires, blocked acquires, blocked_pct) since
+    that backend's cap was last set. Best-effort, same failure handling as
+    _post_capacity: an unreachable backend just logs a warning and yields no
+    stats for that host, rather than aborting record-writing for the whole
+    run."""
+    try:
+        conn = http.client.HTTPConnection(host, BACKEND_PORT, timeout=CAPACITY_PROBE_TIMEOUT_SECONDS)
+        try:
+            conn.request("GET", "/admin/capacity")
+            resp = conn.getresponse()
+            body = resp.read()
+            if resp.status != 200:
+                log("traffic_generator", f"WARNING: {host} capacity-stats fetch returned HTTP {resp.status}")
+                return None
+            return json.loads(body)
+        finally:
+            conn.close()
+    except OSError as e:
+        log("traffic_generator", f"WARNING: couldn't fetch capacity stats from {host}: {e}")
+        return None
+
+
+def collect_contention_stats(hosts):
+    """Aggregates per-backend limiter stats into an overall blocked-request
+    percentage plus the raw per-backend breakdown, for the run record. Only
+    meaningful in DEPLOY_MODE=full (the only mode with /admin/capacity --
+    see apply_contention_level) -- callers should skip this entirely against
+    external backends rather than generating a page of 404 warnings for a
+    field that will just be null anyway."""
+    by_backend = {}
+    total_acquires = 0
+    total_blocked = 0
+    for host in hosts:
+        stats = _get_capacity_stats(host)
+        if stats is None:
+            continue
+        by_backend[host] = stats
+        total_acquires += stats.get("total", 0)
+        total_blocked += stats.get("blocked", 0)
+
+    if not by_backend:
+        return None, None
+
+    overall_pct = round((total_blocked / total_acquires * 100.0) if total_acquires else 0.0, 2)
+    return overall_pct, by_backend
+
+
 def apply_contention_level(hosts, paths, rps, level):
     """Resets every backend to unlimited, then (unless level is "off")
     probes current per-backend latency directly, sizes a concurrency cap
@@ -325,6 +374,21 @@ def run(tick_seconds, rps, duration_minutes, contention):
     end_ts_ms = now_ms()
     actual_duration_s = time.monotonic() - start_monotonic
 
+    # Measures whether the contention cap actually bound anything this run,
+    # rather than leaving that to be inferred from chart shapes -- see
+    # EXPERIMENTS.md, "Backend contention / the many-LB problem". Only
+    # DEPLOY_MODE=full backends expose /admin/capacity; skip entirely
+    # against external backends (apply_contention_level already refused to
+    # run there for any level other than "off", so there's nothing to
+    # measure anyway).
+    contention_blocked_pct = None
+    contention_stats_by_backend = None
+    if DEPLOY_MODE == "full":
+        contention_blocked_pct, contention_stats_by_backend = collect_contention_stats(hosts)
+        if contention_blocked_pct is not None:
+            log("traffic_generator", f"run {run_index}: contention={contention} -- limiter blocked "
+                f"{contention_blocked_pct}% of backend requests")
+
     record = {
         "run_index": run_index,
         "start_ts_ms": start_ts_ms,
@@ -341,6 +405,8 @@ def run(tick_seconds, rps, duration_minutes, contention):
         "contention_limit_per_backend": contention_limit,
         "contention_rho_target": contention_rho,
         "contention_probe_w_ms": contention_probe_w_ms,
+        "contention_blocked_request_pct": contention_blocked_pct,
+        "contention_stats_by_backend": contention_stats_by_backend,
     }
     write_run_record(record)
     log("traffic_generator", f"run {run_index} finished, wrote record to {RUNS_LOG_PATH}")
@@ -377,7 +443,7 @@ def main():
     parser.add_argument("--rps", type=float, default=40, help="requests per second, per algorithm path (default 40)")
     # Default 10 minutes, changed from required-no-default on 2026-07-29.
     # At the current --rps default (40/path), 10 minutes gives 24,000
-    # requests/path -- comfortably under BOOTSTRAP_MAX_SAMPLE (150000) in
+    # requests/path -- comfortably under BOOTSTRAP_MAX_SAMPLE (50000) in
     # analysis/analyze.py, so the stats report always uses full, uncapped
     # data at these defaults. Also long enough to avoid the "unlucky
     # degradation schedule" effect confirmed the same day: a 5-minute run

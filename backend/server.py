@@ -151,14 +151,27 @@ class AdjustableLimiter:
         self._cond = threading.Condition()
         self._limit = None  # None = unlimited
         self._in_use = 0
+        self._total_acquires = 0
+        self._blocked_acquires = 0
 
     def set_limit(self, limit):
         with self._cond:
             self._limit = limit
+            # Reset counters here, not just at construction -- set_limit is
+            # called at the start of every traffic_generator run (see
+            # apply_contention_level's reset-then-apply pair), so this is
+            # what gives each run's /admin/capacity GET a clean "since this
+            # run's cap was set" count instead of bleeding in whatever
+            # blocked/unblocked mix the previous run left behind.
+            self._total_acquires = 0
+            self._blocked_acquires = 0
             self._cond.notify_all()  # wake waiters -- the cap may have just been raised or removed
 
     def acquire(self):
         with self._cond:
+            self._total_acquires += 1
+            if self._limit is not None and self._in_use >= self._limit:
+                self._blocked_acquires += 1
             while self._limit is not None and self._in_use >= self._limit:
                 self._cond.wait()
             self._in_use += 1
@@ -167,6 +180,18 @@ class AdjustableLimiter:
         with self._cond:
             self._in_use -= 1
             self._cond.notify()
+
+    def stats(self):
+        with self._cond:
+            total = self._total_acquires
+            blocked = self._blocked_acquires
+            pct = (blocked / total * 100.0) if total else 0.0
+            return {
+                "limit": self._limit,
+                "total": total,
+                "blocked": blocked,
+                "blocked_pct": round(pct, 2),
+            }
 
 
 _capacity_limiter = AdjustableLimiter()
@@ -183,6 +208,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/static":
             self._serve_static()
             return
+        if self.path == "/admin/capacity":
+            self._handle_get_capacity()
+            return
         self._serve_default()
 
     def do_POST(self):
@@ -191,6 +219,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(404)
         self.end_headers()
+
+    def _handle_get_capacity(self):
+        # Direct-to-backend admin call, same as _handle_set_capacity --
+        # lets traffic_generator.py ask "how often did this backend's cap
+        # actually make a request wait?" at the end of a run, instead of
+        # inferring it indirectly from chart shapes.
+        body = json.dumps(_capacity_limiter.stats()).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_set_capacity(self):
         # Direct-to-backend admin call, bypassing NGINX entirely -- same

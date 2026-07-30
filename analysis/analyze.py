@@ -72,14 +72,17 @@ SIGNIFICANCE_ALPHA = 0.05
 # comparisons came back 6-9ms wide with the identical point estimates and
 # that missed case now significant. The 5000 cap wasn't "good enough,
 # just faster" -- it was materially widening the reported uncertainty.
-# Cost: a full stats report (5-6 comparisons) at 150000 obs/side x 2000
-# resamples took ~10-11 minutes of CPU on a real ~144k-request run, versus
-# a few seconds at the old 5000 cap. That cost lands on every run's
-# automatic end-of-run analysis (see traffic_generator.py's invoke_analysis),
-# not just manual reruns -- lower BOOTSTRAP_MAX_SAMPLE (or pass
-# --max-bootstrap-sample) if that's too slow for your hardware/workflow.
+#
+# Brought back down to 50000 (2026-07-30) as a deliberate middle ground,
+# not a re-run of the 5000-vs-150000 comparison above -- 50000 obs/side is
+# still 10x the sample size that produced 6-9ms CIs at 150000/uncapped, so
+# CI width isn't expected to meaningfully widen from this change; it's
+# purely a CPU-cost tradeoff (fewer than 150000 x 2000 resamples per
+# comparison) for the common case of a 24000-request/path 10-minute run,
+# where the full sample is already under 50000 and this cap doesn't even
+# engage.
 BOOTSTRAP_RESAMPLES = 2000
-BOOTSTRAP_MAX_SAMPLE = 150000
+BOOTSTRAP_MAX_SAMPLE = 50000
 
 
 def ms_to_iso(ts_ms):
@@ -552,11 +555,12 @@ def main():
         default=BOOTSTRAP_MAX_SAMPLE,
         help=(
             f"cap on observations/side used for bootstrap resampling only (point estimates and the "
-            f"Mann-Whitney test always use the full sample); default {BOOTSTRAP_MAX_SAMPLE}, chosen "
-            "over a smaller cap because it measurably tightens the CI (a 5000-obs cap gave 37-45ms-wide "
-            "p99 CIs and one missed-significance case on a real run; 150000 gave 6-9ms-wide CIs on the "
-            "same data with identical point estimates). Costs ~10-11 min of CPU for a full stats report "
-            "at this default on a ~144k-request run -- lower this for a faster/looser report."
+            f"Mann-Whitney test always use the full sample); default {BOOTSTRAP_MAX_SAMPLE}. A 5000-obs "
+            "cap measurably widened CIs on a real run (37-45ms-wide p99 CIs, one missed-significance "
+            "case) versus 150000/uncapped (6-9ms-wide, identical point estimates, that case significant) "
+            "-- this default is a middle ground still 10x the sample size that produced the tight CIs, "
+            "traded for less CPU per report than 150000 costs (~10-11 min for a full report at that "
+            "cap on a ~144k-request run). Lower this further for an even faster/looser report."
         ),
     )
     args = parser.parse_args()
