@@ -48,6 +48,14 @@ CONTROL_ALGO = "rr"
 # adaptive" incremental comparison below.
 ADAPTIVE_ALGO_NAMES = ("aco", "mc")
 
+# Shared minimum width for every algo-name column in printed tables --
+# must be >= the longest algo name + 1 space of padding ("leastconn" is 9
+# chars today) or that row's label overflows its field with no compensating
+# padding, silently shifting every subsequent column right relative to
+# shorter-named rows in the same table (found live: leastconn/random2 rows
+# misaligned against aco/mc/rr/random in the point-estimates table).
+ALGO_LABEL_WIDTH = 10
+
 # One knob, not two: SIGNIFICANCE_ALPHA is both the Mann-Whitney verdict
 # threshold and (as 1 - alpha) the bootstrap CI's coverage level. Exposing
 # separate --alpha/--ci flags would let them drift out of sync (e.g. a
@@ -104,9 +112,14 @@ def contention_summary(run):
     return f"{level} (limit={limit}/backend, rho_target={rho}, probed_w={w_ms}ms)"
 
 
-def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_host):
-    access_log_path = os.path.join(logs_dir, f"{algo}{common.ACCESS_LOG_SUFFIX}")
-    records = common.parse_access_log(access_log_path, start_ts_ms, end_ts_ms, ip_to_host)
+def algo_result_from_records(records, window_seconds, start_ts_ms, end_ts_ms, change_count=None, sampling_windows=None):
+    """The stats-computation half of what used to be one analyze_algo() --
+    split out (see merge_analyze.py) so a multi-instance merged run can
+    build the same per-algorithm result shape from records concatenated
+    across several instances' logs, without duplicating this logic.
+    change_count/sampling_windows are weights.csv-derived and stay
+    per-instance in the merge case (see merge_analyze.py for why) -- callers
+    with nothing meaningful to report there just leave them None."""
     header_times = [r["header_time_ms"] for r in records if r["header_time_ms"] is not None]
 
     buckets = common.bucket_by_window(records, window_seconds, start_ts_ms, end_ts_ms)
@@ -119,10 +132,6 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
     best_window = min(window_means, key=window_means.get) if window_means else None
     worst_window = max(window_means, key=window_means.get) if window_means else None
 
-    weight_rows = common.read_weights_csv(logs_dir, algo, start_ts_ms, end_ts_ms)
-    change_count = common.count_weight_changes(weight_rows)
-    sampling_windows = len(weight_rows) if weight_rows is not None else None
-
     return {
         "records": records,
         "buckets": buckets,
@@ -134,6 +143,15 @@ def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_h
         "change_count": change_count,
         "sampling_windows": sampling_windows,
     }
+
+
+def analyze_algo(logs_dir, algo, start_ts_ms, end_ts_ms, window_seconds, ip_to_host):
+    access_log_path = os.path.join(logs_dir, f"{algo}{common.ACCESS_LOG_SUFFIX}")
+    records = common.parse_access_log(access_log_path, start_ts_ms, end_ts_ms, ip_to_host)
+    weight_rows = common.read_weights_csv(logs_dir, algo, start_ts_ms, end_ts_ms)
+    change_count = common.count_weight_changes(weight_rows)
+    sampling_windows = len(weight_rows) if weight_rows is not None else None
+    return algo_result_from_records(records, window_seconds, start_ts_ms, end_ts_ms, change_count, sampling_windows)
 
 
 def degradation_offset_by_window(per_algo):
@@ -186,7 +204,7 @@ def print_summary(run, per_algo, window_seconds, window_seconds_overridden, ip_t
             file=sys.stderr,
         )
 
-    header = f"{'algo':<6} {'requests':>9} {'mean TTFB(ms)':>14} {'p95 TTFB(ms)':>13} {'best window':>20} {'worst window':>20} {'config changes':>18}"
+    header = f"{'algo':<{ALGO_LABEL_WIDTH}} {'requests':>9} {'mean TTFB(ms)':>14} {'p95 TTFB(ms)':>13} {'best window':>20} {'worst window':>20} {'config changes':>18}"
     print(header)
     print("-" * len(header))
     for algo, data in per_algo.items():
@@ -201,7 +219,7 @@ def print_summary(run, per_algo, window_seconds, window_seconds_overridden, ip_t
             if data["change_count"] is None
             else f"{data['change_count']}/{data['sampling_windows']} windows"
         )
-        print(f"{algo:<6} {n:>9} {mean_s:>14} {p95_s:>13} {best_s:>20} {worst_s:>20} {changes_s:>18}")
+        print(f"{algo:<{ALGO_LABEL_WIDTH}} {n:>9} {mean_s:>14} {p95_s:>13} {best_s:>20} {worst_s:>20} {changes_s:>18}")
 
 
 def print_warnings(per_algo):
@@ -222,9 +240,9 @@ def print_warnings(per_algo):
 
 def format_stats_row(label, stats):
     if stats is None:
-        return f"{label:<6} {'n/a':>8}" + "".join(f"{'n/a':>12}" for _ in common.STAT_NAMES)
+        return f"{label:<{ALGO_LABEL_WIDTH}} {'n/a':>8}" + "".join(f"{'n/a':>12}" for _ in common.STAT_NAMES)
     cells = "".join(f"{stats[col]:>12.1f}" for col in common.STAT_NAMES)
-    return f"{label:<6} {stats['n']:>8}" + cells
+    return f"{label:<{ALGO_LABEL_WIDTH}} {stats['n']:>8}" + cells
 
 
 def format_delta_line(stat_name, point_delta, control_value, ci_lo, ci_hi, alpha):
@@ -252,7 +270,22 @@ def rank_algos(per_algo, stat_name="mean"):
     return ranked
 
 
-def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
+def default_header_lines(run):
+    """The single-run header write_stats_report used to build inline --
+    pulled out so a multi-instance merged report (see merge_analyze.py) can
+    supply its own header (listing all the source runs it merged) while
+    reusing the rest of the report unchanged."""
+    return [
+        f"=== Run {run['run_index']} TTFB statistical comparison (ms) ===",
+        f"control: {CONTROL_ALGO}",
+        f"window:  {ms_to_iso(run['start_ts_ms'])}  ->  {ms_to_iso(run['end_ts_ms'])}",
+        f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
+        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
+        f"contention={contention_summary(run)}",
+    ]
+
+
+def write_stats_report(header_lines, out_filename, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
                         n_resamples=BOOTSTRAP_RESAMPLES, max_bootstrap_sample=BOOTSTRAP_MAX_SAMPLE):
     """The overall statistical comparison report: TTFB mean/median/p90/p95/p99
     for every discovered algorithm (full data), then, for each non-control
@@ -269,20 +302,18 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
     rather than collapsed into one "significant"/"not" verdict. Text, not
     a chart -- meant to be the one artifact that states a run's headline
     numbers plainly, without eyeballing a plot or running your own stats.
+
+    header_lines/out_filename are caller-supplied (see default_header_lines)
+    rather than derived from a single `run` dict here, so this same report
+    body works for both a single run and a merge across several instances'
+    runs (see merge_analyze.py) -- everything below the header only ever
+    touches per_algo, never run-record fields directly.
     """
-    lines = []
-    lines.append(f"=== Run {run['run_index']} TTFB statistical comparison (ms) ===")
-    lines.append(f"control: {CONTROL_ALGO}")
-    lines.append(f"window:  {ms_to_iso(run['start_ts_ms'])}  ->  {ms_to_iso(run['end_ts_ms'])}")
-    lines.append(
-        f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
-        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
-        f"contention={contention_summary(run)}"
-    )
+    lines = list(header_lines)
     lines.append("")
 
     lines.append("--- point estimates (full data) ---")
-    header = f"{'algo':<6} {'n':>8}" + "".join(f"{col:>12}" for col in common.STAT_NAMES)
+    header = f"{'algo':<{ALGO_LABEL_WIDTH}} {'n':>8}" + "".join(f"{col:>12}" for col in common.STAT_NAMES)
     lines.append(header)
     lines.append("-" * len(header))
     for algo, data in per_algo.items():
@@ -298,7 +329,7 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
             stats = data["stats"]
             tag = " [control]" if algo == CONTROL_ALGO else (" [adaptive]" if algo in ADAPTIVE_ALGO_NAMES else " [built-in]")
             lines.append(
-                f"  {i}. {algo:<10} mean={stats['mean']:>8.1f}ms  median={stats['median']:>8.1f}ms  "
+                f"  {i}. {algo:<{ALGO_LABEL_WIDTH}} mean={stats['mean']:>8.1f}ms  median={stats['median']:>8.1f}ms  "
                 f"p95={stats['p95']:>8.1f}ms{tag}"
             )
     lines.append("")
@@ -350,7 +381,7 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
     control_data = per_algo.get(CONTROL_ALGO)
     if control_data is None or control_data["stats"] is None:
         lines.append(f"NOTE: no {CONTROL_ALGO!r} TTFB data found in this run -- skipping rr-control significance comparison.")
-        path = os.path.join(out_dir, f"run{run['run_index']}_stats_report.txt")
+        path = os.path.join(out_dir, out_filename)
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
         return path
@@ -388,7 +419,7 @@ def write_stats_report(run, per_algo, out_dir, rng, alpha=SIGNIFICANCE_ALPHA,
             ci_lo, ci_hi = cis[stat_name]
             lines.append(format_delta_line(stat_name, point_delta, control_data["stats"][stat_name], ci_lo, ci_hi, alpha))
 
-    path = os.path.join(out_dir, f"run{run['run_index']}_stats_report.txt")
+    path = os.path.join(out_dir, out_filename)
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
     return path
@@ -508,7 +539,8 @@ def run_analysis(logs_dir=None, out_dir=None, run_index=None, start_ts_ms=None, 
     # no reason a reader could tell apart from a real change in the data.
     rng = random.Random(run["start_ts_ms"])
     stats_report_path = write_stats_report(
-        run, per_algo, out_dir, rng, alpha=alpha, n_resamples=n_resamples, max_bootstrap_sample=max_bootstrap_sample
+        default_header_lines(run), f"run{run['run_index']}_stats_report.txt", per_algo, out_dir, rng,
+        alpha=alpha, n_resamples=n_resamples, max_bootstrap_sample=max_bootstrap_sample
     )
 
     chart_paths = [plot_ttfb_over_time(per_algo, run, window_seconds, out_dir)]

@@ -14,6 +14,7 @@ with the one already bound to the port.
 The traffic generator is NOT started by this script -- it's a separate,
 manually-triggered step: `docker exec <container> python3 traffic_generator.py ...`
 """
+import os
 import re
 import signal
 import subprocess
@@ -30,7 +31,11 @@ NGINX_MAIN_CONF_PATH = "/etc/nginx/nginx.conf"
 # See pin_worker_processes() below -- moving off 1 without `zone`
 # directives on the upstream blocks reintroduces the per-worker skew
 # artifact that pinning to 1 originally fixed. Not yet paired with zone.
-WORKER_PROCESSES_COUNT = 4
+# Env-driven (default unchanged at 4) so a multi-instance deployment can
+# dial per-instance worker count down to fit a shared CPU budget across
+# several NGINX instances on one host, without needing a different image
+# per instance -- see docker-compose.multi.yml.
+WORKER_PROCESSES_COUNT = int(os.environ.get("WORKER_PROCESSES_COUNT", "4"))
 
 
 def pin_worker_processes():

@@ -89,6 +89,18 @@ CAPACITY_PROBE_TIMEOUT_SECONDS = 5
 # reflects its intended rho targets instead of occasionally coinciding.
 CAPACITY_PROBE_ROUNDS = 3
 
+# Multi-instance-topology knob (see EXPERIMENTS.md, "3x identical NGINX
+# instances / many-LB test"): AdjustableLimiter is one instance per backend
+# *container*, not per NGINX instance -- with several independent
+# controllers all calling apply_contention_level against the same shared
+# backends, whichever one's POST /admin/capacity lands last silently wins,
+# and each one sizing off only its own share of traffic would leave the
+# backend capped far below what the true combined arrival rate needs (see
+# EXPERIMENTS.md for the worked example). Default true so a single-instance
+# deployment (today's docker-compose.full.yml) is completely unaffected --
+# it never sets this env var, so it's always the (only) owner.
+CONTENTION_OWNER = os.environ.get("CONTENTION_OWNER", "true").strip().lower() == "true"
+
 
 def _post_capacity(host, limit):
     """Direct-to-backend admin call (bypasses NGINX, same as sampler.py's
@@ -160,7 +172,7 @@ def collect_contention_stats(hosts):
     return overall_pct, by_backend
 
 
-def apply_contention_level(hosts, paths, rps, level):
+def apply_contention_level(hosts, paths, rps, level, total_rps=None, is_owner=True):
     """Resets every backend to unlimited, then (unless level is "off")
     probes current per-backend latency directly, sizes a concurrency cap
     via Little's Law at the requested utilization target, and pushes it to
@@ -168,6 +180,22 @@ def apply_contention_level(hosts, paths, rps, level):
     otherwise a prior run's cap would silently carry over into a run that
     never asked for one. Returns (limit, rho_target, probe_w_ms) for the
     run record; limit/probe_w_ms are None when level is "off".
+
+    total_rps/is_owner exist for the multi-instance topology (see
+    EXPERIMENTS.md, "3x identical NGINX instances / many-LB test"):
+    total_rps is the *aggregate* rps across every instance sharing the
+    backend pool (defaults to this instance's own rps, i.e. today's
+    single-instance behavior when omitted) -- Little's Law sizing always
+    uses this, not the caller's own rps, since the backend sees every
+    instance's combined traffic regardless of how many separate
+    controllers are generating it. is_owner gates whether this instance
+    actually probes/applies anything: AdjustableLimiter is one instance
+    per backend *container*, shared by every controller that calls it, so
+    with several instances calling this independently, whichever POST
+    lands last silently wins -- exactly one instance (the owner) should
+    ever touch it. A non-owner instance still returns (None, None, None)
+    for level != "off", same as the external-mode no-op below, so its own
+    run record doesn't claim it applied a cap it never touched.
 
     The /admin/capacity endpoint only exists on this project's own
     simulated backends (backend/server.py) -- DEPLOY_MODE=external points
@@ -193,12 +221,23 @@ def apply_contention_level(hosts, paths, rps, level):
         )
         sys.exit(1)
 
+    if level != "off" and not is_owner:
+        log(
+            "traffic_generator",
+            f"contention={level}: CONTENTION_OWNER=false -- skipping probe/apply, this instance only "
+            "generates traffic. The designated owner instance sizes and applies the cap for the full "
+            "multi-instance aggregate.",
+        )
+        return None, None, None
+
     for host in hosts:
         _post_capacity(host, None)
 
     rho_target = CONTENTION_RHO_TARGETS[level]
     if rho_target is None:
         return None, None, None
+
+    effective_rps = rps if total_rps is None else total_rps
 
     # CAPACITY_PROBE_ROUNDS direct probes per backend (not just one), right
     # after the unlimited reset above, so this reflects real current
@@ -212,7 +251,7 @@ def apply_contention_level(hosts, paths, rps, level):
     ]
     avg_w_ms = sum(probe_latencies_ms) / len(probe_latencies_ms)
 
-    lambda_backend = (rps * len(paths)) / len(hosts)
+    lambda_backend = (effective_rps * len(paths)) / len(hosts)
     natural_concurrency_l = lambda_backend * (avg_w_ms / 1000.0)
     limit = max(1, math.ceil(natural_concurrency_l / rho_target))
 
@@ -220,6 +259,7 @@ def apply_contention_level(hosts, paths, rps, level):
         "traffic_generator",
         f"contention={level}: probed avg backend latency={avg_w_ms:.1f}ms "
         f"({CAPACITY_PROBE_ROUNDS} probes/backend x {len(hosts)} backends), "
+        f"sizing_rps={effective_rps:.1f} (total_rps arg{'=' + str(total_rps) if total_rps is not None else ' not given, using own rps'}), "
         f"lambda_backend={lambda_backend:.1f}rps, natural concurrency L={natural_concurrency_l:.1f}, "
         f"rho_target={rho_target} -> capacity limit={limit}/backend",
     )
@@ -294,7 +334,7 @@ def invoke_analysis(run_index):
         log("traffic_generator", f"Phase 4 analysis failed for run {run_index}: {e}")
 
 
-def run(tick_seconds, rps, duration_minutes, contention):
+def run(tick_seconds, rps, duration_minutes, contention, contention_total_rps=None):
     paths = read_location_paths()
     if not paths:
         log("traffic_generator", "no location paths found in generated NGINX config -- nothing to send traffic to")
@@ -321,7 +361,9 @@ def run(tick_seconds, rps, duration_minutes, contention):
         validate_backends.print_failure_report(hosts, unreachable)
         sys.exit(1)
 
-    contention_limit, contention_rho, contention_probe_w_ms = apply_contention_level(hosts, paths, rps, contention)
+    contention_limit, contention_rho, contention_probe_w_ms = apply_contention_level(
+        hosts, paths, rps, contention, total_rps=contention_total_rps, is_owner=CONTENTION_OWNER
+    )
 
     run_index = next_run_index()
     total_duration_seconds = tick_seconds * duration_ticks
@@ -331,7 +373,7 @@ def run(tick_seconds, rps, duration_minutes, contention):
 
     log("traffic_generator", f"run {run_index}: paths={paths} tick={tick_seconds}s rps={rps}/path "
         f"requested_duration={duration_minutes}min -> {duration_ticks} ticks ({total_duration_seconds}s actual) "
-        f"contention={contention} (limit={contention_limit})")
+        f"contention={contention} owner={CONTENTION_OWNER} (limit={contention_limit})")
 
     workers_per_path = max(MIN_WORKERS_PER_PATH, int(rps * WORKERS_PER_REQUESTED_RPS))
     log("traffic_generator", f"sizing thread pool at {workers_per_path} workers/path for {rps}rps/path")
@@ -402,6 +444,7 @@ def run(tick_seconds, rps, duration_minutes, contention):
         "change_counts": current_change_counts(),
         "interrupted": interrupted,
         "contention_level": contention,
+        "contention_owner": CONTENTION_OWNER,
         "contention_limit_per_backend": contention_limit,
         "contention_rho_target": contention_rho,
         "contention_probe_w_ms": contention_probe_w_ms,
@@ -478,9 +521,28 @@ def main():
             "recording contention settings that were never actually applied."
         ),
     )
+    parser.add_argument(
+        "--contention-total-rps",
+        type=float,
+        default=None,
+        help=(
+            "aggregate rps across every instance sharing the backend pool, used only for "
+            "--contention's Little's Law sizing math -- defaults to --rps (today's single-instance "
+            "behavior) when omitted. Only matters on the CONTENTION_OWNER instance in a multi-instance "
+            "topology (see EXPERIMENTS.md, '3x identical NGINX instances / many-LB test') -- pass the "
+            "sum of all instances' --rps here so the cap reflects the real combined arrival rate at "
+            "each backend, not just this one instance's share."
+        ),
+    )
     args = parser.parse_args()
 
-    run(tick_seconds=args.tick, rps=args.rps, duration_minutes=args.duration, contention=args.contention)
+    run(
+        tick_seconds=args.tick,
+        rps=args.rps,
+        duration_minutes=args.duration,
+        contention=args.contention,
+        contention_total_rps=args.contention_total_rps,
+    )
 
 
 if __name__ == "__main__":

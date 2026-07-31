@@ -118,16 +118,7 @@ python3 analysis/analyze.py --run 3          # from the host, against ./logs
 
 **On short smoke-test runs, expect the stats report to say "not statistically significant" everywhere** -- a few thousand requests over tens of seconds usually isn't enough to separate real algorithm differences from noise, especially against backends with deliberately overlapping latency ranges. That's the correct, expected answer at this scale, not a sign anything is broken -- see `analysis/README.md`.
 
-## `traffic_generator.py` CLI options
-
-Every flag also has full help text via `python3 traffic_generator.py --help`, which is the authoritative, always-current source (argparse). This table is a quick-reference index into the deeper discussion elsewhere in the docs:
-
-| Flag | Default | What it does | Deep dive |
-|---|---|---|---|
-| `--rps` | `40` | Requests per second, **per algorithm path** (so `40` means ~240/s aggregate across all six paths). | "Choosing `--rps`" below |
-| `--duration` | `10` | Run length in **minutes**, wall-clock -- internally converted to `ceil(duration*60/tick)` ticks. | "Quick start" above; `AGENT.md`, "Entrypoint / orchestration model" |
-| `--tick` | this container's `TICK_SECONDS` (10s) | Only controls *this invocation's* status-line cadence and duration accounting -- does not change the already-running sampling loops' window size (that's fixed at container boot). Leave unset unless you deliberately want the two to diverge. | "Choosing `--tick`" above; `AGENT.md`, "Entrypoint / orchestration model" |
-| `--contention` | `off` | Backend concurrency-cap level (`off`/`mild`/`moderate`/`heavy`) -- sizes a per-backend cap via Little's Law and pushes it live before traffic starts. **`DEPLOY_MODE=full` only**; refuses to start against external backends for any level other than `off`. | `EXPERIMENTS.md`, "Backend contention / the many-LB problem" |
+`traffic_generator.py --help` is the authoritative, always-current reference for every flag (argparse) if you're invoking it directly against `docker-compose.full.yml`'s single controller rather than through `run_experiment.py` -- see "Choosing `--tick`"/"Choosing `--rps`" below for the reasoning behind the current defaults, and the multi-instance section above for the full flag table when using `run_experiment.py`.
 
 ## Controller-only mode (real backends instead of the simulation)
 
@@ -146,7 +137,50 @@ Startup still runs the same fail-fast backend validation as `docker-compose.full
 
 **Backend latency/degradation simulation and `traffic_generator.py --contention` don't apply here.** `LATENCY_MIN_MS`/`DEGRADATION_*` are env vars on this project's own simulated backend containers (`backend/server.py`, `docker-compose.full.yml`) -- your real hosts just behave however they actually behave, nothing to configure on this project's side. `--contention mild`/`moderate` specifically depends on an admin endpoint that only exists on those simulated backends; run it against `DEPLOY_MODE=external` and it refuses to start rather than silently doing nothing while claiming it worked (`--contention off`, the default, is unaffected either way). See `EXPERIMENTS.md`, "Backend contention / the many-LB problem," for the full mechanism.
 
-Only run one of these two Compose files at a time from this directory -- they share a Docker Compose project name (and volumes) by design, so bring one down (`docker compose -f <file> down`) before starting the other.
+Only run one Compose file at a time from this directory -- `docker-compose.full.yml`, `docker-compose.controller.yml`, and `docker-compose.multi.yml` (below) all share a Docker Compose project name (and volumes) by design, so bring one down (`docker compose -f <file> down`) before starting another.
+
+## Multi-instance mode (`run_experiment.py`)
+
+`docker-compose.multi.yml` runs 3 fully independent NGINX+controller instances (`controller-1`/`controller-2`/`controller-3`), each with today's complete 6-path config, all pointed at the same 5 backend containers -- the literal "multiple independent load balancers sharing one backend pool" scenario NGINX's own docs caution `least_conn`/`random two` against, which the single-instance/6-zone setup above can't reproduce (it only ever has one zone per algorithm). See `EXPERIMENTS.md`, "3x identical NGINX instances / many-LB test," for the full design and reasoning.
+
+```sh
+docker compose -f docker-compose.multi.yml up --build -d
+```
+
+All 3 instances are always deployed together. `run_experiment.py` (run on the host, not inside any container) is the control script for everything past that point -- coordinating runs across however many of the 3 you want to use, live progress, and analysis:
+
+```sh
+python3 run_experiment.py run --rps 13 --duration 10 --contention mild
+```
+
+This launches `traffic_generator.py` inside each selected instance (backgrounded internally, no manual `&`/`wait` needed), live-streams each one's own output tagged `[controller-N]`, then automatically analyzes the results once every instance finishes -- merging across instances when more than one was used, or falling back to a plain single-instance report when only one was.
+
+| Command | What it does |
+|---|---|
+| `run_experiment.py run` | Coordinates a run across the selected instances and analyzes the result. |
+| `run_experiment.py status` | Shows each instance's state -- idle, or running with elapsed/estimated-remaining time -- and its most recently completed run. |
+| `run_experiment.py analyze` | Re-runs analysis without starting new traffic (see below for run selection). |
+| `run_experiment.py purge` | Deletes all logs across every instance for a clean restart at run 1. Refuses if any instance is currently mid-run. |
+
+**`run` options** (same meanings as `traffic_generator.py`'s own flags, since it's just launching that inside each container):
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--rps` | `40` | Requests per second, per algorithm path, **per instance** -- the aggregate used for `--contention` sizing is `--rps x --instances`, computed automatically. |
+| `--duration` | `10` | Run length in minutes, wall-clock, applied to every selected instance. |
+| `--tick` | container default | Passed through if given; omitted leaves each instance on its own container default. |
+| `--contention` | `off` | `off`/`mild`/`moderate`/`heavy` -- applied to every selected instance; only `controller-1` (always included, see `--instances` below) actually sizes/applies the cap, using the real aggregate rps -- see `EXPERIMENTS.md` for why a single owner is required. |
+| `--instances` | `3` | How many of the 3 always-deployed instances to actually send traffic through, always starting from `controller-1` (`1`, `2`, or `3`). |
+| `--no-merge` | off | Skip the automatic analysis step at the end. |
+
+**`analyze` options:**
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--run` | none (auto) | With no args, `analyze` finds the most recent coordinated run by matching start timestamps across instances (each instance's own `run_index` counter is independent, so numbers alone don't reliably identify "the same experiment" -- see `EXPERIMENTS.md`). Pass `--run N` to target a specific run index explicitly instead. |
+| `--instances` | `3` | Only meaningful with `--run` -- how many instances that run index applies to. |
+
+For lower-level, one-off analysis (an exact run index per instance, no auto-detection) the two scripts `run_experiment.py` wraps are still directly usable: `analysis/analyze.py` for a single instance, `analysis/merge_analyze.py --logs-dir-run <dir> <run>` (repeatable, or plain `--logs-dir <dir>` for that instance's latest) for merging specific runs across instances.
 
 ## Choosing `--rps`
 

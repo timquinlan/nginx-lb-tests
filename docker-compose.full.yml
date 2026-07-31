@@ -32,27 +32,29 @@ services:
   # randomized dwell per visit, see AGENT.md.
   #
   # LATENCY_MIN_MS/MAX_MS and DEGRADATION_OFFSET_MIN_MS/MAX_MS below are
-  # currently the "high-volume, small-latency" experiment profile (set
-  # 2026-07-30): the original 150-600ms personality table and -10/+250ms
-  # degradation offset, both scaled down ~50x, same relative shape and
-  # asymmetry preserved. Tests whether NGINX's "least_conn isn't
+  # back to the original "API" latency profile (150-600ms personality
+  # table, -10/+250ms degradation offset) as of 2026-07-30, after a
+  # detour through a ~50x-scaled-down "high-volume, small-latency"
+  # profile (3-12ms) that tested whether NGINX's "least_conn isn't
   # recommended under many-LB contention" caution is really about short,
   # fast transactions (small W means small L=lambda*W for any given
   # backend, so a local connection-count table has little resolution to
   # separate healthy from struggling backends) rather than contention or
-  # many-LB-blindness per se -- see EXPERIMENTS.md, "Algorithm tuning" /
-  # the 2026-07-30 discussion. Needs a correspondingly high --rps on the
-  # traffic_generator.py run to actually build any contention against
-  # backends this fast -- see EXPERIMENTS.md for the Little's Law sizing.
+  # many-LB-blindness per se. Result: leastconn/aco/mc/random2/rr landed
+  # within ~1ms of each other at that profile, both single-instance and
+  # merged across the 3-instance topology -- see EXPERIMENTS.md,
+  # "Algorithm tuning" and "3x identical NGINX instances / many-LB test"
+  # for the numbers. Reverted here to get separation-capable resolution
+  # back for further multi-instance testing.
   backend-1:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "3"
-      LATENCY_MAX_MS: "4"
+      LATENCY_MIN_MS: "150"
+      LATENCY_MAX_MS: "200"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
-      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--0.2}"
-      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-5}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
       DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-1.log
     volumes:
       - ./logs:/var/log/nginx-lb-tests
@@ -63,11 +65,11 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "3"
-      LATENCY_MAX_MS: "7"
+      LATENCY_MIN_MS: "150"
+      LATENCY_MAX_MS: "350"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
-      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--0.2}"
-      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-5}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
       DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-2.log
     volumes:
       - ./logs:/var/log/nginx-lb-tests
@@ -78,11 +80,11 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "3.2"
-      LATENCY_MAX_MS: "3.8"
+      LATENCY_MIN_MS: "160"
+      LATENCY_MAX_MS: "190"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-40}"
-      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--0.2}"
-      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-5}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
       DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-3.log
     volumes:
       - ./logs:/var/log/nginx-lb-tests
@@ -93,11 +95,11 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "4.5"
-      LATENCY_MAX_MS: "9"
+      LATENCY_MIN_MS: "220"
+      LATENCY_MAX_MS: "450"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-80}"
-      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--0.2}"
-      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-5}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
       DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-4.log
     volumes:
       - ./logs:/var/log/nginx-lb-tests
@@ -108,11 +110,11 @@ services:
     build:
       context: ./backend
     environment:
-      LATENCY_MIN_MS: "7"
-      LATENCY_MAX_MS: "12"
+      LATENCY_MIN_MS: "350"
+      LATENCY_MAX_MS: "600"
       DEGRADATION_MEAN_DWELL_SECONDS: "${DEGRADATION_MEAN_DWELL_SECONDS:-120}"
-      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--0.2}"
-      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-5}"
+      DEGRADATION_OFFSET_MIN_MS: "${DEGRADATION_OFFSET_MIN_MS:--10}"
+      DEGRADATION_OFFSET_MAX_MS: "${DEGRADATION_OFFSET_MAX_MS:-250}"
       DEGRADATION_LOG_PATH: /var/log/nginx-lb-tests/degradation-backend-5.log
     volumes:
       - ./logs:/var/log/nginx-lb-tests
