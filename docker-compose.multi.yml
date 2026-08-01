@@ -21,6 +21,11 @@ x-controller-env: &controller-env
   ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.1}"
   ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
   WORKER_PROCESSES_COUNT: "${WORKER_PROCESSES_COUNT:-2}"
+  # Default 1024 (base image default) ran out at real experiment volume --
+  # see entrypoint.py's WORKER_CONNECTIONS_COUNT comment for the math and
+  # the live 2026-07-31 confirmation (thousands of "1024 worker_connections
+  # are not enough" errors at 450rps/path, zero at 120rps/path).
+  WORKER_CONNECTIONS_COUNT: "${WORKER_CONNECTIONS_COUNT:-8192}"
 
 services:
   # Same 5 backend definitions as docker-compose.full.yml, kept in sync by

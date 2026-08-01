@@ -141,6 +141,12 @@ services:
       TICK_SECONDS: "${TICK_SECONDS:-10}"
       ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.1}"
       ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
+      # Default 1024 (base image default) runs out at real experiment
+      # volume -- see controller/entrypoint.py's WORKER_CONNECTIONS_COUNT
+      # comment for the math and the live 2026-07-31 confirmation
+      # (thousands of "1024 worker_connections are not enough" errors at
+      # 450rps/path in the multi-instance topology, zero at 120rps/path).
+      WORKER_CONNECTIONS_COUNT: "${WORKER_CONNECTIONS_COUNT:-8192}"
     volumes:
       - ./upstream-hosts.txt:/app/upstream-hosts.txt:ro
       # Bind mounts to plain host directories, not named volumes -- so logs

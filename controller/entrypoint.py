@@ -37,6 +37,36 @@ NGINX_MAIN_CONF_PATH = "/etc/nginx/nginx.conf"
 # per instance -- see docker-compose.multi.yml.
 WORKER_PROCESSES_COUNT = int(os.environ.get("WORKER_PROCESSES_COUNT", "4"))
 
+# Default 1024 (the base image's own default, never previously overridden)
+# runs out at real experiment volume -- confirmed live 2026-07-31: at
+# 450rps/path x 6 paths against the 150-600ms backend profile,
+# `1024 worker_connections are not enough` fired thousands of times per
+# run, inflating measured TTFB with connection-ceiling artifacts that have
+# nothing to do with backend latency or algorithm choice (zero such
+# warnings at 120rps/path on the same profile -- see EXPERIMENTS.md).
+# 8192 gives comfortable headroom for the higher end of a
+# 40/80/160/320rps-per-path sweep: at 320rps/path x 6 paths, L=lambda*W
+# stays comfortably under 8192/2 (each proxied request costs 2 slots --
+# see AGENT.md) even with W stretched by real contention.
+WORKER_CONNECTIONS_COUNT = int(os.environ.get("WORKER_CONNECTIONS_COUNT", "8192"))
+
+
+def pin_worker_connections():
+    # events{} is also main-context (like worker_processes above), so this
+    # patches the base image's nginx.conf in place rather than trying to
+    # supply it from our conf.d includes (only valid inside http{}) or via
+    # `nginx -g` (would collide with the base image's own directive, same
+    # "duplicate directive" crash worker_processes hit -- see AGENT.md).
+    with open(NGINX_MAIN_CONF_PATH) as f:
+        content = f.read()
+    patched, count = re.subn(r"worker_connections\s+\d+;", f"worker_connections {WORKER_CONNECTIONS_COUNT};", content, count=1)
+    if count == 0:
+        log("entrypoint", f"WARNING: no worker_connections directive found in {NGINX_MAIN_CONF_PATH}, leaving as-is")
+        return
+    with open(NGINX_MAIN_CONF_PATH, "w") as f:
+        f.write(patched)
+    log("entrypoint", f"pinned worker_connections to {WORKER_CONNECTIONS_COUNT} in {NGINX_MAIN_CONF_PATH}")
+
 
 def pin_worker_processes():
     # worker_processes is a main-context directive -- it can't be set from
@@ -73,6 +103,7 @@ def pin_worker_processes():
 
 def start_nginx():
     pin_worker_processes()
+    pin_worker_connections()
     proc = subprocess.Popen(["nginx", "-g", "daemon off;"])
     time.sleep(NGINX_STARTUP_GRACE_SECONDS)
     if proc.poll() is not None:
