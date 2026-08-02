@@ -35,17 +35,14 @@ services:
   # back to the original "API" latency profile (150-600ms personality
   # table, -10/+250ms degradation offset) as of 2026-07-30, after a
   # detour through a ~50x-scaled-down "high-volume, small-latency"
-  # profile (3-12ms) that tested whether NGINX's "least_conn isn't
-  # recommended under many-LB contention" caution is really about short,
-  # fast transactions (small W means small L=lambda*W for any given
-  # backend, so a local connection-count table has little resolution to
-  # separate healthy from struggling backends) rather than contention or
-  # many-LB-blindness per se. Result: leastconn/aco/mc/random2/rr landed
-  # within ~1ms of each other at that profile, both single-instance and
-  # merged across the 3-instance topology -- see EXPERIMENTS.md,
-  # "Algorithm tuning" and "3x identical NGINX instances / many-LB test"
-  # for the numbers. Reverted here to get separation-capable resolution
-  # back for further multi-instance testing.
+  # profile (3-12ms) that tested whether resolution (not just raw signal
+  # strength) is what separates leastconn/aco/mc: short, fast
+  # transactions mean a small W, so a small L=lambda*W leaves little
+  # resolution for a connection-count- or latency-based signal to
+  # separate healthy from struggling backends regardless of algorithm.
+  # Result: leastconn/aco/mc/random2/rr landed within ~1ms of each other
+  # at that profile -- see EXPERIMENTS.md, "Algorithm tuning," for the
+  # numbers. Reverted here to get separation-capable resolution back.
   backend-1:
     build:
       context: ./backend
@@ -143,9 +140,7 @@ services:
       ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
       # Default 1024 (base image default) runs out at real experiment
       # volume -- see controller/entrypoint.py's WORKER_CONNECTIONS_COUNT
-      # comment for the math and the live 2026-07-31 confirmation
-      # (thousands of "1024 worker_connections are not enough" errors at
-      # 450rps/path in the multi-instance topology, zero at 120rps/path).
+      # comment for the math and the live confirmation.
       WORKER_CONNECTIONS_COUNT: "${WORKER_CONNECTIONS_COUNT:-8192}"
     volumes:
       - ./upstream-hosts.txt:/app/upstream-hosts.txt:ro

@@ -31,23 +31,15 @@ NGINX_MAIN_CONF_PATH = "/etc/nginx/nginx.conf"
 # See pin_worker_processes() below -- moving off 1 without `zone`
 # directives on the upstream blocks reintroduces the per-worker skew
 # artifact that pinning to 1 originally fixed. Not yet paired with zone.
-# Env-driven (default unchanged at 4) so a multi-instance deployment can
-# dial per-instance worker count down to fit a shared CPU budget across
-# several NGINX instances on one host, without needing a different image
-# per instance -- see docker-compose.multi.yml.
 WORKER_PROCESSES_COUNT = int(os.environ.get("WORKER_PROCESSES_COUNT", "4"))
 
 # Default 1024 (the base image's own default, never previously overridden)
-# runs out at real experiment volume -- confirmed live 2026-07-31: at
-# 450rps/path x 6 paths against the 150-600ms backend profile,
-# `1024 worker_connections are not enough` fired thousands of times per
-# run, inflating measured TTFB with connection-ceiling artifacts that have
-# nothing to do with backend latency or algorithm choice (zero such
-# warnings at 120rps/path on the same profile -- see EXPERIMENTS.md).
-# 8192 gives comfortable headroom for the higher end of a
-# 40/80/160/320rps-per-path sweep: at 320rps/path x 6 paths, L=lambda*W
-# stays comfortably under 8192/2 (each proxied request costs 2 slots --
-# see AGENT.md) even with W stretched by real contention.
+# runs out at real experiment volume -- confirmed live: at high rps against
+# the 150-600ms backend profile, `1024 worker_connections are not enough`
+# fired thousands of times per run, inflating measured TTFB with
+# connection-ceiling artifacts that have nothing to do with backend latency
+# or algorithm choice. 8192 gives comfortable headroom well beyond what a
+# single-instance run at these defaults needs.
 WORKER_CONNECTIONS_COUNT = int(os.environ.get("WORKER_CONNECTIONS_COUNT", "8192"))
 
 

@@ -97,29 +97,12 @@ def ms_to_iso(ts_ms):
     return datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def contention_summary(run):
-    """Formats the backend-contention-cap fields traffic_generator.py's
-    --contention flag writes into a run record (see EXPERIMENTS.md,
-    "Backend contention / the many-LB problem"). .get()-based throughout --
-    runs recorded before this flag existed have none of these keys, and
-    should just read as "off" rather than raising."""
-    level = run.get("contention_level", "off")
-    limit = run.get("contention_limit_per_backend")
-    if limit is None:
-        return level
-    rho = run.get("contention_rho_target")
-    w_ms = run.get("contention_probe_w_ms")
-    return f"{level} (limit={limit}/backend, rho_target={rho}, probed_w={w_ms}ms)"
-
-
 def algo_result_from_records(records, window_seconds, start_ts_ms, end_ts_ms, change_count=None, sampling_windows=None):
-    """The stats-computation half of what used to be one analyze_algo() --
-    split out (see merge_analyze.py) so a multi-instance merged run can
-    build the same per-algorithm result shape from records concatenated
-    across several instances' logs, without duplicating this logic.
-    change_count/sampling_windows are weights.csv-derived and stay
-    per-instance in the merge case (see merge_analyze.py for why) -- callers
-    with nothing meaningful to report there just leave them None."""
+    """The stats-computation half of analyze_algo() -- kept separate so the
+    pure stats computation (given a list of already-parsed records) stays
+    independent of how those records were fetched. change_count/
+    sampling_windows are weights.csv-derived; callers with nothing
+    meaningful to report there just leave them None."""
     header_times = [r["header_time_ms"] for r in records if r["header_time_ms"] is not None]
 
     buckets = common.bucket_by_window(records, window_seconds, start_ts_ms, end_ts_ms)
@@ -192,7 +175,6 @@ def print_summary(run, per_algo, window_seconds, window_seconds_overridden, ip_t
     print(
         f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
         f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
-        f"contention={contention_summary(run)}  "
         f"interrupted={run.get('interrupted', False)}"
     )
     source = "--window-seconds override" if window_seconds_overridden else "this run's tick_seconds (see AGENT.md: assumes --tick matched the container's TICK_SECONDS)"
@@ -271,17 +253,13 @@ def rank_algos(per_algo, stat_name="mean"):
 
 
 def default_header_lines(run):
-    """The single-run header write_stats_report used to build inline --
-    pulled out so a multi-instance merged report (see merge_analyze.py) can
-    supply its own header (listing all the source runs it merged) while
-    reusing the rest of the report unchanged."""
+    """Builds the header lines write_stats_report prepends to its report body."""
     return [
         f"=== Run {run['run_index']} TTFB statistical comparison (ms) ===",
         f"control: {CONTROL_ALGO}",
         f"window:  {ms_to_iso(run['start_ts_ms'])}  ->  {ms_to_iso(run['end_ts_ms'])}",
         f"config:  tick={run['tick_seconds']}s  rps={run['rps_per_path']}/path  "
-        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s  "
-        f"contention={contention_summary(run)}",
+        f"planned={run['planned_duration_ticks']} ticks  actual={run['actual_duration_s']}s",
     ]
 
 
@@ -304,10 +282,9 @@ def write_stats_report(header_lines, out_filename, per_algo, out_dir, rng, alpha
     numbers plainly, without eyeballing a plot or running your own stats.
 
     header_lines/out_filename are caller-supplied (see default_header_lines)
-    rather than derived from a single `run` dict here, so this same report
-    body works for both a single run and a merge across several instances'
-    runs (see merge_analyze.py) -- everything below the header only ever
-    touches per_algo, never run-record fields directly.
+    rather than derived from a single `run` dict here -- everything below
+    the header only ever touches per_algo, never run-record fields
+    directly.
     """
     lines = list(header_lines)
     lines.append("")

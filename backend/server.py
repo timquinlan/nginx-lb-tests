@@ -7,7 +7,6 @@ top. No framework, no persistence -- just enough to give NGINX something
 to load-balance across with controllable, observable timing.
 """
 import http.server
-import json
 import os
 import random
 import socket
@@ -136,67 +135,6 @@ def current_degradation_offset_ms() -> float:
         return _current_offset_ms
 
 
-# Contention-cap knob (see EXPERIMENTS.md, "Backend contention / the
-# many-LB problem"). Off (limit=None, unlimited) by default -- matches the
-# original unbounded-thread-per-connection behavior exactly, so nothing
-# changes for any existing run unless something explicitly sets a limit.
-#
-# threading.Semaphore/BoundedSemaphore can't be resized in place, so this
-# is a small hand-rolled counter + condition variable instead -- needed
-# because the whole point is to change capacity *live*, between traffic
-# generator runs, without restarting the container (see the /admin/capacity
-# endpoint below and traffic_generator.py's --contention flag).
-class AdjustableLimiter:
-    def __init__(self):
-        self._cond = threading.Condition()
-        self._limit = None  # None = unlimited
-        self._in_use = 0
-        self._total_acquires = 0
-        self._blocked_acquires = 0
-
-    def set_limit(self, limit):
-        with self._cond:
-            self._limit = limit
-            # Reset counters here, not just at construction -- set_limit is
-            # called at the start of every traffic_generator run (see
-            # apply_contention_level's reset-then-apply pair), so this is
-            # what gives each run's /admin/capacity GET a clean "since this
-            # run's cap was set" count instead of bleeding in whatever
-            # blocked/unblocked mix the previous run left behind.
-            self._total_acquires = 0
-            self._blocked_acquires = 0
-            self._cond.notify_all()  # wake waiters -- the cap may have just been raised or removed
-
-    def acquire(self):
-        with self._cond:
-            self._total_acquires += 1
-            if self._limit is not None and self._in_use >= self._limit:
-                self._blocked_acquires += 1
-            while self._limit is not None and self._in_use >= self._limit:
-                self._cond.wait()
-            self._in_use += 1
-
-    def release(self):
-        with self._cond:
-            self._in_use -= 1
-            self._cond.notify()
-
-    def stats(self):
-        with self._cond:
-            total = self._total_acquires
-            blocked = self._blocked_acquires
-            pct = (blocked / total * 100.0) if total else 0.0
-            return {
-                "limit": self._limit,
-                "total": total,
-                "blocked": blocked,
-                "blocked_pct": round(pct, 2),
-            }
-
-
-_capacity_limiter = AdjustableLimiter()
-
-
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "nginx-lb-tests-backend/0.1"
 
@@ -208,78 +146,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/static":
             self._serve_static()
             return
-        if self.path == "/admin/capacity":
-            self._handle_get_capacity()
-            return
         self._serve_default()
 
     def do_POST(self):
-        if self.path == "/admin/capacity":
-            self._handle_set_capacity()
-            return
         self.send_response(404)
         self.end_headers()
 
-    def _handle_get_capacity(self):
-        # Direct-to-backend admin call, same as _handle_set_capacity --
-        # lets traffic_generator.py ask "how often did this backend's cap
-        # actually make a request wait?" at the end of a run, instead of
-        # inferring it indirectly from chart shapes.
-        body = json.dumps(_capacity_limiter.stats()).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _serve_default(self):
+        offset_ms = current_degradation_offset_ms()
+        base_latency_ms = random.uniform(LATENCY_MIN_MS, LATENCY_MAX_MS)
+        total_latency_ms = max(0.0, base_latency_ms + offset_ms)
+        time.sleep(total_latency_ms / 1000.0)
 
-    def _handle_set_capacity(self):
-        # Direct-to-backend admin call, bypassing NGINX entirely -- same
-        # pattern as sampler.py's direct_probe(). Not part of the
-        # experiment's request path (no degradation offset, no latency
-        # sleep), just a control-plane call to resize _capacity_limiter.
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw)
-            limit = payload.get("limit")
-            if limit is not None:
-                limit = int(limit)
-                if limit < 1:
-                    raise ValueError("limit must be >= 1 (or null for unlimited)")
-        except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as e:
-            body = f"invalid request: {e}\n".encode("utf-8")
-            self.send_response(400)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        _capacity_limiter.set_limit(limit)
-        body = f"capacity set to {limit if limit is not None else 'unlimited'}\n".encode("utf-8")
+        body = f"{HOSTNAME}\n".encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Degradation-Offset-Ms", f"{offset_ms:.1f}")
         self.end_headers()
         self.wfile.write(body)
-
-    def _serve_default(self):
-        _capacity_limiter.acquire()
-        try:
-            offset_ms = current_degradation_offset_ms()
-            base_latency_ms = random.uniform(LATENCY_MIN_MS, LATENCY_MAX_MS)
-            total_latency_ms = max(0.0, base_latency_ms + offset_ms)
-            time.sleep(total_latency_ms / 1000.0)
-
-            body = f"{HOSTNAME}\n".encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("X-Degradation-Offset-Ms", f"{offset_ms:.1f}")
-            self.end_headers()
-            self.wfile.write(body)
-        finally:
-            _capacity_limiter.release()
 
     def _serve_static(self):
         # Stub for the future throughput phase. Serves STATIC_FILE_PATH if
@@ -294,19 +179,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        _capacity_limiter.acquire()
-        try:
-            offset_ms = current_degradation_offset_ms()
-            with open(STATIC_FILE_PATH, "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("X-Degradation-Offset-Ms", f"{offset_ms:.1f}")
-            self.end_headers()
-            self.wfile.write(data)
-        finally:
-            _capacity_limiter.release()
+        offset_ms = current_degradation_offset_ms()
+        with open(STATIC_FILE_PATH, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Degradation-Offset-Ms", f"{offset_ms:.1f}")
+        self.end_headers()
+        self.wfile.write(data)
 
 
 def main():
