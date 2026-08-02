@@ -7,10 +7,4 @@ todo
 # Bind-mounted runtime data (generated NGINX confs, experiment logs) --
 # regenerated/produced at container startup and by each run, not source.
 /logs/
-/logs-instance-1/
-/logs-instance-2/
-/logs-instance-3/
 /nginx-conf/
-/nginx-conf-instance-1/
-/nginx-conf-instance-2/
-/nginx-conf-instance-3/
