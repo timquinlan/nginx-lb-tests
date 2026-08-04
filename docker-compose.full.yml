@@ -136,7 +136,15 @@ services:
       # significance, while 10s gave clean, fully-significant separation for
       # both algorithms across a real 10-minute/150k-request run.
       TICK_SECONDS: "${TICK_SECONDS:-10}"
-      ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.1}"
+      # 0.3 (raised from 0.1) -- a 6-variant tuning sweep at rps=80 (see
+      # EXPERIMENTS.md, "Algorithm tuning") found raising evaporation alone
+      # cut aco's mean-TTFB gap to leastconn from +9.2ms/+2.5% down to
+      # +2.6ms/+0.7%, with p90/p95 no longer significantly different from
+      # leastconn's -- every other direction tried (raising deposit, or
+      # lowering either knob) made the gap worse, several of them much
+      # worse. Being reconfirmed with repeated back-to-back runs before
+      # treating this as settled.
+      ACO_EVAPORATION_RATE: "${ACO_EVAPORATION_RATE:-0.3}"
       ACO_DEPOSIT_CONSTANT: "${ACO_DEPOSIT_CONSTANT:-10.0}"
       # Default 1024 (base image default) runs out at real experiment
       # volume -- see controller/entrypoint.py's WORKER_CONNECTIONS_COUNT

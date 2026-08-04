@@ -60,8 +60,6 @@ def cmd_run(args):
         sys.exit(1)
 
     print("\nrun finished.", flush=True)
-    if not args.no_analyze:
-        subprocess.run([sys.executable, os.path.join("analysis", "analyze.py"), "--logs-dir", LOGS_DIR], check=True)
 
 
 def read_latest_run(logs_dir):
@@ -203,7 +201,6 @@ def main():
     p_run.add_argument("--rps", type=float, default=40, help="requests per second, per algorithm path (same default as traffic_generator.py)")
     p_run.add_argument("--duration", type=float, default=10, help="run duration in minutes, same meaning as traffic_generator.py's --duration (default 10)")
     p_run.add_argument("--tick", type=float, default=None, help="passed through to --tick if given; omitted means the container's own default")
-    p_run.add_argument("--no-analyze", action="store_true", help="skip running analysis automatically once the run finishes")
     p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="check whether the controller is currently mid-run, and its most recently completed run")
