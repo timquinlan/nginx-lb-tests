@@ -81,7 +81,7 @@ Everything algorithm/traffic-generator-side derives from one base unit, `--tick`
 
 ## Choosing `--tick`
 
-**Default is 10s.** The ratio between `--tick` (the sampling window) and `DEGRADATION_MEAN_DWELL_SECONDS` (how fast the environment actually changes) -- not the absolute tick value -- determines whether `aco`/`mc`/`combo` get a clean signal at all; aim for at least ~4x the sampling window on the fastest backend class as a starting point if you change either. See `FINDINGS.md` for the dose-response results (and a 60-minute-scale reconfirmation) behind this default, and `AGENT.md` for the underlying mechanism.
+**Default is 10s.** The ratio between `--tick` (the sampling window) and `DEGRADATION_MEAN_DWELL_SECONDS` (how fast the environment actually changes) -- not the absolute tick value -- determines whether `aco`/`mc`/`combo` get a clean signal at all; aim for at least ~4x the sampling window on the fastest backend class as a starting point if you change either. See `AGENT.md` for the underlying mechanism.
 
 ## Data & where it lands
 
