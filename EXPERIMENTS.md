@@ -12,7 +12,21 @@ This is the forward-looking companion to `FINDINGS.md`: not what the experiment 
 
 **MC -- no real behavioral knob today.** `_build_transition_matrix` uses plain `1/latency_ms` as its score with no sharpness parameter; `STATIONARY_ITERATIONS`/`STATIONARY_TOLERANCE` are numerical-precision settings, not personality knobs (200 iterations converges near-instantly for 5 states regardless of these values). The natural addition: an exponent, `1/latency_ms^k`, where `k=1` is today's gentle behavior and `k>1` sharpens the stationary distribution toward the fastest backend -- the same "commit harder" lever as aco's weight-scaling idea above. Right now mc has no way to be more or less aggressive; it just is what it is.
 
-**leastconn isn't tunable from this project's side at all.** It's NGINX's own built-in mechanism with no exposed parameters (NGINX Plus has a `slow_start` option; open-source NGINX, which this project uses, doesn't). Any tuning experiment here is about whether aco/mc can close the gap on leastconn, not the reverse.
+**leastconn isn't tunable from this project's side at all.** It's NGINX's own built-in mechanism with no exposed parameters (NGINX Plus has a `slow_start` option; open-source NGINX, which this project uses, doesn't). Any tuning experiment aimed at `leastconn` directly is about whether aco/mc can close the gap on it, not the reverse -- but see `combo` below for a way around that limit rather than through it.
+
+**`combo` (`least_conn` + ACO-set weights) tuning: a first pass found no clean winner, still open.** `combo` currently reuses `/aco`'s exact tuning (`ACO_EVAPORATION_RATE`/`ACO_DEPOSIT_CONSTANT`, both read as shared module-level constants in `controller/algorithms/aco.py` -- see `AGENT.md`), inherited rather than independently chosen -- plausible it wants something different, since `combo` isn't the sole reaction mechanism the way `aco` alone is (`least_conn`'s live connection count already supplies the zero-lag correction it might not need to earn through weight-tuning the same way `aco` does).
+
+One evaporation-rate variant each side of the current default (`--rps 80`, single 10-minute run per variant, `combo` vs `leastconn` gap):
+
+| Evaporation | mean | median | p90 | p95 | p99 |
+|---|---|---|---|---|---|
+| 0.15 (slower/more momentum) | -20.6ms (-5.7%) | -20.0ms (-5.8%) | -61.0ms (-10.6%) | -38.0ms (-5.9%) | -19.0ms (-2.5%) |
+| **0.3 (current default)** | -23.9ms (-6.6%) | **-21.0ms (-6.2%)** | **-81.0ms (-14.2%)** | **-51.0ms (-8.0%)** | -22.0ms (-3.0%) |
+| 0.5 (faster/less momentum) | **-25.4ms (-6.7%)** | -17.0ms (-4.8%) | -54.0ms (-9.2%) | -40.0ms (-6.2%) | **-40.0ms (-5.2%)** |
+
+0.15 was strictly worse than the current default on every stat -- consistent with `aco`'s own sweep, where less momentum (higher evaporation) helped. 0.5 was a mixed result rather than a clean win: better mean and notably better p99, worse median/p90/p95 -- not enough to displace 0.3 as the default off one run each, but different enough from the current default's profile to be worth a proper reproducibility check (several repeated runs, the same way the `aco` tuning result was confirmed) before drawing any real conclusion. Not run yet. If it holds up, worth also testing whether it changes with `ACO_DEPOSIT_CONSTANT` held fixed vs varied together.
+
+Testing this properly (isolating `combo`'s own tuning from `/aco`'s) needs `COMBO_EVAPORATION_RATE`/`COMBO_DEPOSIT_CONSTANT` env vars and turning `aco.py`'s two module-level constants into per-instance constructor args -- not done as of this writing. Today, any env var change moves both `/aco` and `/combo` together, which is fine for evaluating `combo` vs `leastconn` in isolation (which is all the sweep above needed) but would conflate the two if a future experiment also cared about `/aco`'s own numbers from the same run.
 
 ## Run sizing: duration, volume, and sample size
 

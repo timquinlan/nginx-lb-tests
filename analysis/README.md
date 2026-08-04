@@ -104,7 +104,7 @@ Compose volume was needed for this.
   (`rank_algos()`, tagged `[control]`/`[adaptive]`/`[built-in]`); an
   incremental head-to-head between the best-performing static/built-in
   algorithm (`rr`, `random`, `random2`, `leastconn`) and the
-  best-performing adaptive algorithm (`aco`, `mc`) — same Mann-Whitney +
+  best-performing adaptive algorithm (`aco`, `mc`, `combo`) — same Mann-Whitney +
   bootstrap-CI machinery as the control comparisons below, just between
   those two specific algorithms instead of each-vs-`rr` (see `AGENT.md`,
   "Analysis tooling"; which algorithm names count as "adaptive" is
@@ -157,11 +157,13 @@ Compose volume was needed for this.
   one line per backend, request count per analysis window. `rr`'s and
   `random`'s should both look roughly flat/uniform (round robin and an
   unweighted dice roll have no reason to favor one backend over another)
-  — that's the sanity-check baseline `aco`/`mc` are meant to visibly
+  — that's the sanity-check baseline `aco`/`mc`/`combo` are meant to visibly
   diverge from. `random2`'s and `leastconn`'s sit in between: not driven
   by latency at all, but not perfectly flat either, since NGINX's own
   live connection-count tiebreak can still mildly favor a backend that
-  happens to finish requests faster.
+  happens to finish requests faster. `combo`'s chart reflects both effects at
+  once -- ACO-driven weight changes *and* `least_conn`'s own live tiebreak on
+  top of them, since its upstream block carries both.
 - **Stderr warning** if an algorithm changed weights in less than 30% of
   its sampling windows during the run — signals early convergence (design
   doc: "user may need to increase backend variability").
