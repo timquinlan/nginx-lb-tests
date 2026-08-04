@@ -28,6 +28,7 @@ from common import (
     BACKEND_PORT,
     NGINX_EXPERIMENT_PORT,
     DYNAMIC_ALGO_NAMES,
+    DYNAMIC_ALGO_METHODS,
     STATIC_ALGO_NAMES,
     STATIC_ALGO_METHODS,
     ALL_ALGO_NAMES,
@@ -114,8 +115,10 @@ def main():
     for algo in DYNAMIC_ALGO_NAMES:
         path = os.path.join(CONF_DIR, f"{algo}.upstream.conf")
         weights = {h: EQUAL_WEIGHT_PLACEHOLDER for h in hosts}
-        write_upstream_conf(path, algo, hosts, BACKEND_PORT, weights=weights)
-        log("generate_config", f"wrote {path} (equal-weight placeholder)")
+        method = DYNAMIC_ALGO_METHODS.get(algo)
+        write_upstream_conf(path, algo, hosts, BACKEND_PORT, weights=weights, method=method)
+        method_desc = f", method={method!r}" if method else ""
+        log("generate_config", f"wrote {path} (equal-weight placeholder{method_desc})")
 
     main_conf_path = os.path.join(CONF_DIR, "nginx-lb-tests.conf")
     content = render_main_conf(hosts, DEPLOY_MODE, NGINX_EXPERIMENT_PORT, LOG_DIR)

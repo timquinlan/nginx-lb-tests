@@ -59,7 +59,10 @@ TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "60"))
 # path (it's mechanistically identical to "random two" in open-source
 # NGINX) and plain least_conn was added in its place instead.
 STATIC_ALGO_NAMES = ("rr", "random", "random2", "leastconn")
-DYNAMIC_ALGO_NAMES = ("aco", "mc")
+# "combo" pairs NGINX's own least_conn method with weights set by a
+# dedicated ACO instance (see algorithms/aco.py), instead of aco/mc's
+# plain weight-only upstream blocks -- see DYNAMIC_ALGO_METHODS below.
+DYNAMIC_ALGO_NAMES = ("aco", "mc", "combo")
 ALL_ALGO_NAMES = STATIC_ALGO_NAMES + DYNAMIC_ALGO_NAMES
 
 # NGINX upstream-block method directive per static algorithm, written as
@@ -72,6 +75,19 @@ STATIC_ALGO_METHODS = {
     "random": "random",
     "random2": "random two",
     "leastconn": "least_conn",
+}
+
+# Same idea as STATIC_ALGO_METHODS, for the dynamic (weight-writing)
+# algorithms -- aco/mc are plain weighted-round-robin (no method
+# directive), while combo layers its ACO-derived weights on top of
+# NGINX's least_conn method (a "weighted least_conn" upstream: NGINX
+# picks the server with the lowest active_connections/weight, so a
+# higher-weight backend can carry more concurrent connections before it's
+# judged "as busy" as a lower-weight one).
+DYNAMIC_ALGO_METHODS = {
+    "aco": None,
+    "mc": None,
+    "combo": "least_conn",
 }
 
 MIN_WEIGHT = 1

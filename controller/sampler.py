@@ -50,6 +50,14 @@ IP_TO_HOST_PATH = os.path.join(LOG_DIR, "ip_to_host.json")
 ALGORITHMS = {
     "aco": AntColonyOptimization(),
     "mc": MarkovChain(),
+    # Own instance, own pheromone state, fed by /combo's own traffic --
+    # deliberately not a shared reference to the "aco" instance above, so
+    # combo stands on its own the same way aco/mc each do (see AGENT.md,
+    # "combo" for the tradeoff this implies). Both instances read the same
+    # ACO_EVAPORATION_RATE/ACO_DEPOSIT_CONSTANT env vars (module-level in
+    # aco.py), so combo always runs with whatever tuning aco itself is
+    # currently using.
+    "combo": AntColonyOptimization(),
 }
 
 _log_offsets = {}  # algo_name -> byte offset into its access log, in-memory

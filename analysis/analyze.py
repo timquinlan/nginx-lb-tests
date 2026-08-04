@@ -45,8 +45,12 @@ CONTROL_ALGO = "rr"
 # reasoning as CONTROL_ALGO above: which group an algorithm belongs to is
 # a fact about the experiment design, not derivable from which log files
 # happen to exist. Used by write_stats_report's "best built-in vs best
-# adaptive" incremental comparison below.
-ADAPTIVE_ALGO_NAMES = ("aco", "mc")
+# adaptive" incremental comparison below. combo counts as adaptive here
+# despite also using NGINX's least_conn method underneath -- its weights
+# still come from a per-window ACO update like aco/mc's (weight-history
+# CSV, change_count, the works), it just biases least_conn's tiebreak
+# instead of driving plain weighted round robin.
+ADAPTIVE_ALGO_NAMES = ("aco", "mc", "combo")
 
 # Shared minimum width for every algo-name column in printed tables --
 # must be >= the longest algo name + 1 space of padding ("leastconn" is 9

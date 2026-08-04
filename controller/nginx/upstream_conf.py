@@ -37,10 +37,15 @@ def render_upstream_conf(algo_name, hosts, port, weights=None, method=None):
 
     method, when given, is an NGINX upstream-block method directive (e.g.
     "random", "random two", "least_conn") rendered as the first line
-    inside the block -- an alternative selection mechanism to the
-    weight=-based one, driven entirely by NGINX itself (a dice roll or
-    live connection count) with no controller involvement at all. Nothing
-    in this project combines method and weights on the same conf.
+    inside the block. For the static algorithms this is the *entire*
+    selection mechanism, driven by NGINX itself (a dice roll or live
+    connection count) with no weights and no controller involvement at
+    all. combo is the one case that combines both: least_conn as the
+    method, plus weight= entries the sampler keeps rewriting -- NGINX's
+    least_conn then picks the server with the lowest
+    active_connections/weight, so ACO's weights bias which of the
+    least-busy servers wins a tie instead of overriding least_conn
+    outright.
 
     Every block also gets a `zone` directive (see DEFAULT_ZONE_SIZE
     above), named after the algorithm so each path's shared state stays

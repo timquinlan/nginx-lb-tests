@@ -16,7 +16,7 @@ import json
 import os
 import subprocess
 
-from common import log, now_ms, now_iso, CONF_DIR, LOG_DIR, BACKEND_PORT
+from common import log, now_ms, now_iso, CONF_DIR, LOG_DIR, BACKEND_PORT, DYNAMIC_ALGO_METHODS
 from nginx.upstream_conf import write_upstream_conf
 
 
@@ -95,7 +95,8 @@ def apply_weights(algo_name, hosts, new_weights):
     if changed:
         state["change_count"] += 1
         conf_path = os.path.join(CONF_DIR, f"{algo_name}.upstream.conf")
-        write_upstream_conf(conf_path, algo_name, hosts, BACKEND_PORT, weights=new_weights)
+        method = DYNAMIC_ALGO_METHODS.get(algo_name)
+        write_upstream_conf(conf_path, algo_name, hosts, BACKEND_PORT, weights=new_weights, method=method)
         reload_nginx()
         log("config_writer", f"{algo_name}: weights changed (change_count={state['change_count']}) -> {new_weights}")
     state["weights"] = new_weights
