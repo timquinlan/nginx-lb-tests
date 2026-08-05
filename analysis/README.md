@@ -45,9 +45,9 @@ access log files —
 **`start_ts_ms`/`end_ts_ms` are the only thing that separates one run's
 requests from another's afterward.**
 
-**`{algo}.weights.csv`** (dynamic algorithms only — `rr`, `random`,
-`random2`, and `leastconn` have none, since all four are
-static/unweighted; NGINX's own method directive does the selecting) —
+**`{algo}.weights.csv`** (dynamic algorithms only — `rr_control` and
+`leastconn` have none, since both are static/unweighted; NGINX's own
+method directive does the selecting) —
 wide-form, one row per sampling window, regardless of whether the weights
 actually changed: `timestamp_ms, timestamp_iso, <one column per
 backend>`.
@@ -97,19 +97,19 @@ Compose volume was needed for this.
 - **Stdout summary table** — per algorithm: request count, mean TTFB,
   p95 TTFB, best/worst sampling window (by mean TTFB) and when it
   happened, and config-change count (`N/M sampling windows`, or `static
-  (n/a)` for `rr`).
+  (n/a)` for `rr_control`).
 - **`runN_stats_report.txt`** — the overall statistical comparison: TTFB
   mean/median/p90/p95/p99 for every discovered algorithm (point estimates,
   full data); every algorithm ranked best-to-worst by mean TTFB
   (`rank_algos()`, tagged `[control]`/`[adaptive]`/`[built-in]`); an
   incremental head-to-head between the best-performing static/built-in
-  algorithm (`rr`, `random`, `random2`, `leastconn`) and the
-  best-performing adaptive algorithm (`aco`, `mc`, `combo`) — same Mann-Whitney +
+  algorithm (`rr_control`, `leastconn`) and the
+  best-performing adaptive algorithm (`aco_wrr`, `mc_wrr`, `aco_lc`, `mc_lc`) — same Mann-Whitney +
   bootstrap-CI machinery as the control comparisons below, just between
-  those two specific algorithms instead of each-vs-`rr` (see `AGENT.md`,
+  those two specific algorithms instead of each-vs-`rr_control` (see `AGENT.md`,
   "Analysis tooling"; which algorithm names count as "adaptive" is
   hardcoded as `ADAPTIVE_ALGO_NAMES` in `analyze.py`, same reasoning as
-  `CONTROL_ALGO` below); then, for each non-control algorithm vs `rr` (the control —
+  `CONTROL_ALGO` below); then, for each non-control algorithm vs `rr_control` (the control —
   see `CONTROL_ALGO` in `analyze.py`):
   - a **Mann-Whitney U p-value** on the full TTFB samples — is the overall
     distribution different from the control at all, with no assumption
@@ -121,7 +121,7 @@ Compose volume was needed for this.
   These are two different questions and are labeled as such — a
   significant Mann-Whitney result doesn't guarantee every individual
   percentile's CI excludes 0, and vice versa. Negative delta = faster
-  than the control. If no `rr` log exists in a given run (e.g. an adapted
+  than the control. If no `rr_control` log exists in a given run (e.g. an adapted
   setup with a different control), the point-estimate table is still
   written; only the significance section is skipped, with a note
   explaining why.
@@ -154,16 +154,16 @@ Compose volume was needed for this.
   whichever algorithm routed to it), signed: positive means the pool was
   net slower than baseline that window, negative means net faster.
 - **`runN_{algo}_selection_frequency.png`** — one chart per algorithm,
-  one line per backend, request count per analysis window. `rr`'s and
-  `random`'s should both look roughly flat/uniform (round robin and an
-  unweighted dice roll have no reason to favor one backend over another)
-  — that's the sanity-check baseline `aco`/`mc`/`combo` are meant to visibly
-  diverge from. `random2`'s and `leastconn`'s sit in between: not driven
-  by latency at all, but not perfectly flat either, since NGINX's own
-  live connection-count tiebreak can still mildly favor a backend that
-  happens to finish requests faster. `combo`'s chart reflects both effects at
-  once -- ACO-driven weight changes *and* `least_conn`'s own live tiebreak on
-  top of them, since its upstream block carries both.
+  one line per backend, request count per analysis window. `rr_control`'s
+  should look roughly flat/uniform (unweighted round robin has no reason
+  to favor one backend over another) — that's the sanity-check baseline
+  `aco_wrr`/`mc_wrr`/`aco_lc`/`mc_lc` are meant to visibly diverge from.
+  `leastconn`'s sits in between: not driven by latency at all, but not
+  perfectly flat either, since NGINX's own live connection-count tiebreak
+  can still mildly favor a backend that happens to finish requests
+  faster. `aco_lc`/`mc_lc`'s charts reflect both effects at once --
+  ACO/MC-driven weight changes *and* `least_conn`'s own live tiebreak on
+  top of them, since their upstream blocks carry both.
 - **Stderr warning** if an algorithm changed weights in less than 30% of
   its sampling windows during the run — signals early convergence (design
   doc: "user may need to increase backend variability").
@@ -185,10 +185,10 @@ one you actually want reflected in the chart's x-axis.
   pipe-delimited schema above) and it's picked up automatically —
   `discover_algos()` derives the algorithm list from which `*.access.log`
   files exist in the logs directory, nothing is hardcoded to
-  `rr`/`aco`/`mc`. If it's a weighted algorithm, add a matching
+  `rr_control`/`aco_wrr`/`mc_wrr`. If it's a weighted algorithm, add a matching
   `{algo}.weights.csv` too (wide-form as described above) to get its
   config-change stats and warning; omitting it is treated as "static,
-  not applicable" rather than "zero changes," same as `rr`.
+  not applicable" rather than "zero changes," same as `rr_control`.
 - **Different log schema entirely:** everything schema-specific lives in
   `analysis/log_reader.py`'s `parse_access_log()` / `read_weights_csv()`
   — the rest of `analyze.py` (stats, bucketing, charts) works against the

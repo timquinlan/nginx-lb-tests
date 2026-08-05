@@ -83,7 +83,7 @@ def select_run(runs, run_index=None, start_ts_ms=None):
 
 def discover_algos(logs_dir):
     """Algorithm names are derived from which *.access.log files exist,
-    rather than a hardcoded ("rr", "aco", "mc") list -- adding a new
+    rather than a hardcoded ("rr_control", "aco_wrr", "mc_wrr") list -- adding a new
     algorithm's location block (which writes its own access log, per
     AGENT.md) makes it show up here automatically, no analysis code change
     needed."""
@@ -195,9 +195,10 @@ def _parse_signed_float_field(value):
 
 def read_weights_csv(logs_dir, algo, start_ts_ms, end_ts_ms):
     """Returns rows (list of {backend: int_weight}) within the run window,
-    in file order. rr has no weights file (static, unweighted -- see
-    AGENT.md); callers should treat that as "not applicable", not "zero
-    changes", since rr was never eligible to change in the first place.
+    in file order. rr_control has no weights file (static, unweighted --
+    see AGENT.md); callers should treat that as "not applicable", not
+    "zero changes", since rr_control was never eligible to change in the
+    first place.
 
     Rows written under a different backend pool than the file's own
     header (see AGENT.md's "backend pool changed mid-file" tradeoff --

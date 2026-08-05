@@ -6,7 +6,7 @@ Change-count state is persisted to a small JSON file per algorithm under
 LOG_DIR rather than kept only in the sampler loop's memory, because the
 traffic generator (a separate process, invoked via `docker exec` against
 the long-running container) needs to read the live count to print
-`aco changes: N | mc changes: N` and to write the final count to
+`aco_wrr changes: N | mc_wrr changes: N | ...` and to write the final count to
 runs.log. Only one process (that algorithm's sampling loop) ever writes
 its state file, so there's no write/write race -- traffic_generator only
 reads.

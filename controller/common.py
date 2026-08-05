@@ -13,7 +13,8 @@ import sys
 
 # --- Paths -----------------------------------------------------------------
 # CONF_DIR is where the controller writes its *own* generated confs
-# (rr/aco/mc upstream blocks + the main server block). It is deliberately
+# (rr_control/leastconn/aco_wrr/mc_wrr/aco_lc/mc_lc upstream blocks + the
+# main server block). It is deliberately
 # NOT /etc/nginx/conf.d: a bind mount (or named volume) mounted straight
 # onto conf.d would overlay (and hide) the base image's own
 # conf.d/default.conf the first time the mount is used, which breaks the
@@ -46,54 +47,57 @@ TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "60"))
 
 # --- Algorithms --------------------------------------------------------------
 # Round robin is static/unweighted and has no controller module (see
-# AGENT.md). ACO and MC are the paths whose upstream weights the sampler
-# rewrites every sampling window.
+# AGENT.md). ACO and MC are the underlying algorithms whose weights the
+# sampler rewrites every sampling window; each is exposed on two paths --
+# a plain weighted-round-robin upstream (*_wrr) and a weighted-least_conn
+# one (*_lc, see DYNAMIC_ALGO_METHODS below).
 #
-# random/random2/leastconn are also static, same as rr: NGINX's own
-# upstream-block method directive (see STATIC_ALGO_METHODS below) does
-# the selection internally, every request -- no weight computation, no
-# sampling loop, no weights.csv, no change counter. They exist to compare
-# against this project's adaptive algorithms (aco/mc) the same way rr
-# does, just with a different built-in NGINX mechanism driving selection.
-# See AGENT.md for why "random two least_conn" isn't a fourth, separate
-# path (it's mechanistically identical to "random two" in open-source
-# NGINX) and plain least_conn was added in its place instead.
-STATIC_ALGO_NAMES = ("rr", "random", "random2", "leastconn")
-# "combo" pairs NGINX's own least_conn method with weights set by a
-# dedicated ACO instance (see algorithms/aco.py), instead of aco/mc's
-# plain weight-only upstream blocks -- see DYNAMIC_ALGO_METHODS below.
-DYNAMIC_ALGO_NAMES = ("aco", "mc", "combo")
+# leastconn is also static, same as rr_control: NGINX's own upstream-block
+# method directive (see STATIC_ALGO_METHODS below) does the selection
+# internally, every request -- no weight computation, no sampling loop, no
+# weights.csv, no change counter. It exists to compare against this
+# project's adaptive algorithms the same way rr_control does, just with a
+# different built-in NGINX mechanism driving selection. `random`/`random2`
+# were removed -- see AGENT.md's "History" section.
+STATIC_ALGO_NAMES = ("rr_control", "leastconn")
+# aco_wrr/mc_wrr pair a dedicated ACO/MarkovChain instance with plain
+# weighted round robin (no method directive). aco_lc/mc_lc pair the same
+# two algorithms with NGINX's least_conn method instead, layering a
+# learned weight signal on top of least_conn's live one -- see
+# DYNAMIC_ALGO_METHODS below. All four have their own independent
+# algorithm instance (see sampler.py's ALGORITHMS dict) -- aco_wrr and
+# aco_lc never share pheromone state, same for mc_wrr/mc_lc.
+DYNAMIC_ALGO_NAMES = ("aco_wrr", "mc_wrr", "aco_lc", "mc_lc")
 ALL_ALGO_NAMES = STATIC_ALGO_NAMES + DYNAMIC_ALGO_NAMES
 
 # NGINX upstream-block method directive per static algorithm, written as
 # the first line inside the block (see nginx/upstream_conf.py). None means
 # no directive at all -- NGINX's own default upstream method is already
-# plain round robin, so omitting the line reproduces rr's historical
-# unweighted conf byte-for-byte.
+# plain round robin, so omitting the line reproduces rr_control's
+# historical unweighted conf byte-for-byte.
 STATIC_ALGO_METHODS = {
-    "rr": None,
-    "random": "random",
-    "random2": "random two",
+    "rr_control": None,
     "leastconn": "least_conn",
 }
 
 # Same idea as STATIC_ALGO_METHODS, for the dynamic (weight-writing)
-# algorithms -- aco/mc are plain weighted-round-robin (no method
-# directive), while combo layers its ACO-derived weights on top of
-# NGINX's least_conn method (a "weighted least_conn" upstream: NGINX
-# picks the server with the lowest active_connections/weight, so a
+# algorithms -- aco_wrr/mc_wrr are plain weighted-round-robin (no method
+# directive), while aco_lc/mc_lc layer their respective learned weights on
+# top of NGINX's least_conn method (a "weighted least_conn" upstream:
+# NGINX picks the server with the lowest active_connections/weight, so a
 # higher-weight backend can carry more concurrent connections before it's
 # judged "as busy" as a lower-weight one).
 DYNAMIC_ALGO_METHODS = {
-    "aco": None,
-    "mc": None,
-    "combo": "least_conn",
+    "aco_wrr": None,
+    "mc_wrr": None,
+    "aco_lc": "least_conn",
+    "mc_lc": "least_conn",
 }
 
 MIN_WEIGHT = 1
 MAX_WEIGHT = 100
 
-# The placeholder weight generate_config.py writes for aco/mc before priming
+# The placeholder weight generate_config.py writes for the dynamic algorithms before priming
 # runs, and the constant weight stub.py's reference EqualWeightStub always
 # returns. Any equal integer in [MIN_WEIGHT, MAX_WEIGHT] would be a valid
 # placeholder (all backends carrying the same weight is pure round robin in
@@ -136,7 +140,7 @@ def log(component, message, stream=sys.stderr):
 
 def read_location_paths(main_conf_path=None):
     """Read algorithm paths back out of the generated NGINX config, rather
-    than hardcoding /rr, /aco, /mc anywhere downstream (traffic generator
+    than hardcoding /rr_control, /aco_wrr, /mc_wrr anywhere downstream (traffic generator
     requirement)."""
     main_conf_path = main_conf_path or os.path.join(CONF_DIR, "nginx-lb-tests.conf")
     paths = []

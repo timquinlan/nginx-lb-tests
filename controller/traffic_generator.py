@@ -3,7 +3,7 @@
 experiment run, against the already-running, already-primed container (see
 AGENT.md "Entrypoint / Orchestration Model"). Hits NGINX at localhost.
 Reads algorithm paths from the generated NGINX config dynamically (never
-hardcodes /rr, /aco, /mc), so adding a new algorithm's location block is all
+hardcodes /rr_control, /aco_wrr, /mc_wrr), so adding a new algorithm's location block is all
 that's needed for it to be picked up here automatically.
 
 Does not log individual requests -- NGINX access logs are the experimental
@@ -241,7 +241,7 @@ def main():
     # anyway to stay comfortably low rather than lean on that headroom.
     # Also the base of that day's same-total-volume series (40rps/60min,
     # 80rps/30min, 160rps/15min, 240rps/10min -- all 144k requests/path),
-    # where p99-vs-rr significance held at every point on that series, so
+    # where p99-vs-rr_control significance held at every point on that series, so
     # nothing about correctness depends on running faster than this. See
     # README.md, "Choosing --rps" for the full history of this default.
     parser.add_argument("--rps", type=float, default=40, help="requests per second, per algorithm path (default 40)")
@@ -253,7 +253,7 @@ def main():
     # degradation schedule" effect confirmed the same day: a 5-minute run
     # only samples a handful of each backend's independent degradation
     # transitions, so its realized average condition (and even the
-    # aco-vs-mc ranking, normally a near-tie) can swing noticeably by
+    # aco_wrr-vs-mc_wrr ranking, normally a near-tie) can swing noticeably by
     # chance in a way a 10+ minute run doesn't -- see EXPERIMENTS.md.
     parser.add_argument(
         "--duration",

@@ -4,9 +4,11 @@
 Reads upstream-hosts.txt and DEPLOY_MODE and writes every file NGINX needs
 under CONF_DIR:
 
-  rr.upstream.conf   -- static, unweighted, never touched again
-  aco.upstream.conf  -- equal-weight placeholder, rewritten by config_writer
-  mc.upstream.conf   -- equal-weight placeholder, rewritten by config_writer
+  rr_control.upstream.conf   -- static, unweighted, never touched again
+  aco_wrr.upstream.conf      -- equal-weight placeholder, rewritten by config_writer
+  mc_wrr.upstream.conf       -- equal-weight placeholder, rewritten by config_writer
+  aco_lc.upstream.conf       -- equal-weight placeholder, rewritten by config_writer
+  mc_lc.upstream.conf        -- equal-weight placeholder, rewritten by config_writer
   nginx-lb-tests.conf   -- resolver + log_format + server{} with one location
                         block per algorithm path
 

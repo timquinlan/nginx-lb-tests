@@ -36,11 +36,11 @@ services:
   # table, -10/+250ms degradation offset) as of 2026-07-30, after a
   # detour through a ~50x-scaled-down "high-volume, small-latency"
   # profile (3-12ms) that tested whether resolution (not just raw signal
-  # strength) is what separates leastconn/aco/mc: short, fast
+  # strength) is what separates leastconn/aco_wrr/mc_wrr: short, fast
   # transactions mean a small W, so a small L=lambda*W leaves little
   # resolution for a connection-count- or latency-based signal to
   # separate healthy from struggling backends regardless of algorithm.
-  # Result: leastconn/aco/mc/random2/rr landed within ~1ms of each other
+  # Result: leastconn/aco_wrr/mc_wrr/rr_control landed within ~1ms of each other
   # at that profile -- see EXPERIMENTS.md, "Algorithm tuning," for the
   # numbers. Reverted here to get separation-capable resolution back.
   backend-1:
@@ -138,7 +138,7 @@ services:
       TICK_SECONDS: "${TICK_SECONDS:-10}"
       # 0.3 (raised from 0.1) -- a 6-variant tuning sweep at rps=80 (see
       # EXPERIMENTS.md, "Algorithm tuning") found raising evaporation alone
-      # cut aco's mean-TTFB gap to leastconn from +9.2ms/+2.5% down to
+      # cut aco_wrr's mean-TTFB gap to leastconn from +9.2ms/+2.5% down to
       # +2.6ms/+0.7%, with p90/p95 no longer significantly different from
       # leastconn's -- every other direction tried (raising deposit, or
       # lowering either knob) made the gap worse, several of them much

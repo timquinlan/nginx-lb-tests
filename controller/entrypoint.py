@@ -76,7 +76,7 @@ def pin_worker_processes():
     # directive -- without one, more workers means more independent
     # round-robin/connection-count cycles, and the *aggregate* distribution
     # across them skews harder as worker count goes up (confirmed live,
-    # see AGENT.md: 2 workers vs. 6 workers vs. 6 workers+zone on /rr).
+    # see AGENT.md: 2 workers vs. 6 workers vs. 6 workers+zone on /rr_control).
     # WORKER_PROCESSES_COUNT going to 4 here is step one of that move --
     # `zone` directives on the upstream blocks are the other half and are
     # not yet added (see AGENT.md/memory), so every path currently

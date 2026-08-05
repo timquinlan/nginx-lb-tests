@@ -35,30 +35,31 @@ LOW_CHANGE_RATIO = 0.3  # see print_warnings()
 # compares every other discovered algorithm against it. Not derived from
 # discover_algos() since "which one is the control" is a fact about the
 # experiment design, not something inferable from which log files exist.
-CONTROL_ALGO = "rr"
+CONTROL_ALGO = "rr_control"
 
 # Algorithms that adaptively compute weights from observed latency every
 # sampling window (see AGENT.md). Everything else discover_algos() finds
-# is a static, built-in NGINX selection mechanism -- rr, plus NGINX's own
-# random/random-two/least_conn upstream-block directives (see
+# is a static, built-in NGINX selection mechanism -- rr_control, plus
+# NGINX's own least_conn upstream-block directive (see
 # controller/common.py's STATIC_ALGO_METHODS). Hardcoded here, same
 # reasoning as CONTROL_ALGO above: which group an algorithm belongs to is
 # a fact about the experiment design, not derivable from which log files
 # happen to exist. Used by write_stats_report's "best built-in vs best
-# adaptive" incremental comparison below. combo counts as adaptive here
-# despite also using NGINX's least_conn method underneath -- its weights
-# still come from a per-window ACO update like aco/mc's (weight-history
-# CSV, change_count, the works), it just biases least_conn's tiebreak
-# instead of driving plain weighted round robin.
-ADAPTIVE_ALGO_NAMES = ("aco", "mc", "combo")
+# adaptive" incremental comparison below. aco_lc/mc_lc count as adaptive
+# here despite also using NGINX's least_conn method underneath -- their
+# weights still come from a per-window ACO/MC update like aco_wrr/mc_wrr's
+# (weight-history CSV, change_count, the works), it just biases
+# least_conn's tiebreak instead of driving plain weighted round robin.
+ADAPTIVE_ALGO_NAMES = ("aco_wrr", "mc_wrr", "aco_lc", "mc_lc")
 
 # Shared minimum width for every algo-name column in printed tables --
-# must be >= the longest algo name + 1 space of padding ("leastconn" is 9
-# chars today) or that row's label overflows its field with no compensating
-# padding, silently shifting every subsequent column right relative to
-# shorter-named rows in the same table (found live: leastconn/random2 rows
-# misaligned against aco/mc/rr/random in the point-estimates table).
-ALGO_LABEL_WIDTH = 10
+# must be >= the longest algo name + 1 space of padding ("rr_control" is
+# 10 chars today) or that row's label overflows its field with no
+# compensating padding, silently shifting every subsequent column right
+# relative to shorter-named rows in the same table (found live:
+# leastconn rows misaligned against aco_wrr/mc_wrr/rr_control in the
+# point-estimates table).
+ALGO_LABEL_WIDTH = 11
 
 # One knob, not two: SIGNIFICANCE_ALPHA is both the Mann-Whitney verdict
 # threshold and (as 1 - alpha) the bootstrap CI's coverage level. Exposing
@@ -79,7 +80,7 @@ SIGNIFICANCE_ALPHA = 0.05
 #
 # Raised from 5000 to 150000 (2026-07-29) after directly comparing both on
 # the same real-run data: at 5000 obs/side, p99 CIs were 37-45ms wide and
-# one comparison (mc vs rr) missed significance outright; uncapped at
+# one comparison (mc_wrr vs rr_control) missed significance outright; uncapped at
 # ~144k obs/side (the full sample for a 144k-request run), the same
 # comparisons came back 6-9ms wide with the identical point estimates and
 # that missed case now significant. The 5000 cap wasn't "good enough,
@@ -146,7 +147,7 @@ def degradation_offset_by_window(per_algo):
     the backend, not of whichever algorithm happened to route to it, so
     pooling gives one algorithm-agnostic view of the pool's overall
     condition at any point in the run, regardless of which (if any) access
-    log has an rr-style baseline to read it from.
+    log has an rr_control-style baseline to read it from.
 
     Returns mean X-Degradation-Offset-Ms per window (signed: positive =
     pool net slower than baseline, negative = net faster) -- not a
@@ -316,14 +317,15 @@ def write_stats_report(header_lines, out_filename, per_algo, out_dir, rng, alpha
     lines.append("")
 
     # --- incremental: best built-in NGINX mechanism vs best adaptive algorithm ---
-    # Once there are multiple static/built-in candidates (rr, random,
-    # random2, leastconn) and multiple adaptive candidates (aco, mc), the
-    # fixed rr-vs-everyone comparison below doesn't say which of each
-    # GROUP actually won -- it only ever measures each algorithm against
-    # one specific static baseline. This compares the strongest of each
-    # group head-to-head instead. Independent of whether rr itself has
-    # data this run (see the control-missing branch below), since rr is
-    # just one of several possible "best built-in" candidates here, not a
+    # Once there are multiple static/built-in candidates (rr_control,
+    # leastconn) and multiple adaptive candidates (aco_wrr, mc_wrr,
+    # aco_lc, mc_lc), the fixed rr_control-vs-everyone comparison below
+    # doesn't say which of each GROUP actually won -- it only ever
+    # measures each algorithm against one specific static baseline. This
+    # compares the strongest of each group head-to-head instead.
+    # Independent of whether rr_control itself has data this run (see the
+    # control-missing branch below), since rr_control is just one of
+    # several possible "best built-in" candidates here, not a
     # prerequisite for this comparison.
     lines.append("--- best built-in NGINX mechanism vs best adaptive algorithm ---")
     builtin_ranked = [item for item in ranked if item[0] not in ADAPTIVE_ALGO_NAMES]
@@ -361,7 +363,7 @@ def write_stats_report(header_lines, out_filename, per_algo, out_dir, rng, alpha
 
     control_data = per_algo.get(CONTROL_ALGO)
     if control_data is None or control_data["stats"] is None:
-        lines.append(f"NOTE: no {CONTROL_ALGO!r} TTFB data found in this run -- skipping rr-control significance comparison.")
+        lines.append(f"NOTE: no {CONTROL_ALGO!r} TTFB data found in this run -- skipping control significance comparison.")
         path = os.path.join(out_dir, out_filename)
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -445,11 +447,12 @@ def max_selection_frequency(per_algo):
     """Highest per-window, per-backend request count across every
     algorithm in the run -- used so all of a run's selection-frequency
     charts share one y-axis (see plot_selection_frequency). Without this,
-    rr's chart (tightly clustered around its equal share, e.g. 495-515)
-    auto-scales to its own narrow range and reads as far noisier/more
-    volatile than aco/mc's charts (which legitimately span a much wider
-    range, e.g. 0-600) purely because of independent axis scaling -- an
-    apples-to-oranges visual comparison, not a real difference."""
+    rr_control's chart (tightly clustered around its equal share, e.g.
+    495-515) auto-scales to its own narrow range and reads as far
+    noisier/more volatile than aco_wrr/mc_wrr's charts (which legitimately
+    span a much wider range, e.g. 0-600) purely because of independent
+    axis scaling -- an apples-to-oranges visual comparison, not a real
+    difference."""
     peak = 0
     for data in per_algo.values():
         for recs in data["buckets"].values():

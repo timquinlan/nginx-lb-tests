@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Runs backend validation, the priming sample, then one continuous
-per-algorithm sampling loop per dynamic algorithm (aco, mc). Reads the
-backend list from upstream-hosts.txt (same source NGINX config generation
-reads) so the controller and NGINX always agree on the pool. Logs to
-stderr only -- this is Stream 1 (operational), never analyzed by Phase 4.
+per-algorithm sampling loop per dynamic algorithm (aco_wrr, mc_wrr,
+aco_lc, mc_lc). Reads the backend list from upstream-hosts.txt (same
+source NGINX config generation reads) so the controller and NGINX always
+agree on the pool. Logs to stderr only -- this is Stream 1 (operational),
+never analyzed by Phase 4.
 
 Phase 1 wired every dynamic algorithm to the equal-weight stub so the
 plumbing (priming, sampling cadence, sparse-observation fallback, config
 writer, change counter) could be exercised end-to-end before any real
-ACO/Markov math existed. Phase 2 swapped in the real ACO module for /aco.
-Phase 3 swaps in the real Markov module for /mc -- both dynamic algorithms
-now run their real math simultaneously.
+ACO/Markov math existed. Phase 2 swapped in the real ACO module for
+/aco_wrr. Phase 3 swaps in the real Markov module for /mc_wrr. Phase 5
+added /aco_lc and /mc_lc, pairing each algorithm with NGINX's least_conn
+method instead of plain weighted round robin -- all four dynamic
+algorithms now run their real math simultaneously.
 """
 import http.client
 import json
@@ -48,16 +51,21 @@ PROBE_TIMEOUT_SECONDS = 5
 IP_TO_HOST_PATH = os.path.join(LOG_DIR, "ip_to_host.json")
 
 ALGORITHMS = {
-    "aco": AntColonyOptimization(),
-    "mc": MarkovChain(),
-    # Own instance, own pheromone state, fed by /combo's own traffic --
-    # deliberately not a shared reference to the "aco" instance above, so
-    # combo stands on its own the same way aco/mc each do (see AGENT.md,
-    # "combo" for the tradeoff this implies). Both instances read the same
+    "aco_wrr": AntColonyOptimization(),
+    "mc_wrr": MarkovChain(),
+    # Own instance, own pheromone state, fed by /aco_lc's own traffic --
+    # deliberately not a shared reference to the "aco_wrr" instance above,
+    # so aco_lc stands on its own the same way every other dynamic
+    # algorithm here does (see AGENT.md, "aco_lc/mc_lc" for the tradeoff
+    # this implies). Both ACO instances read the same
     # ACO_EVAPORATION_RATE/ACO_DEPOSIT_CONSTANT env vars (module-level in
-    # aco.py), so combo always runs with whatever tuning aco itself is
-    # currently using.
-    "combo": AntColonyOptimization(),
+    # aco.py), so aco_lc always runs with whatever tuning aco_wrr itself
+    # is currently using.
+    "aco_lc": AntColonyOptimization(),
+    # Same idea as "aco_lc" above, but pairing least_conn with MC's
+    # weights instead of ACO's -- own instance, fed by /mc_lc's own
+    # traffic, not shared with the "mc_wrr" instance above.
+    "mc_lc": MarkovChain(),
 }
 
 _log_offsets = {}  # algo_name -> byte offset into its access log, in-memory
@@ -181,7 +189,7 @@ def run_priming(hosts):
 # container boot, so it has zero protection against a transient failure
 # hitting this loop hours into a long-running container's life. Found
 # 2026-07-29: a backend container restart (to deploy an unrelated code
-# change) caused a brief DNS-resolution failure; aco's sampling thread hit
+# change) caused a brief DNS-resolution failure; aco_wrr's sampling thread hit
 # it inside direct_probe(), the uncaught exception killed the thread
 # outright, and its weights silently froze for the rest of the container's
 # life -- multiple experiment runs looked like static weighted round robin

@@ -1,8 +1,8 @@
 """Rendering and writing of individual NGINX upstream {} blocks.
 
-Shared by generate_config.py (initial rr/aco/mc confs at startup) and
-config_writer.py (per-window aco/mc rewrites), so both paths produce
-identical file formats.
+Shared by generate_config.py (initial confs at startup) and
+config_writer.py (per-window dynamic-algorithm rewrites), so both paths
+produce identical file formats.
 """
 import os
 
@@ -12,7 +12,7 @@ import os
 # connection counts, random two's tiebreak) independently per worker
 # process; with more than one worker, that means multiple independent
 # selection cycles, and the *aggregate* distribution across all of them
-# skews harder as worker count goes up -- confirmed live on /rr (2 workers,
+# skews harder as worker count goes up -- confirmed live on /rr_control (2 workers,
 # 6 workers, 6 workers+zone) before this was added, see AGENT.md. 64k is
 # comfortably enough for this project's backend-pool sizes (5 by default,
 # up to the 25 mentioned in the Scaling section) -- NGINX's own per-server
@@ -30,22 +30,21 @@ def zone_name(algo_name):
 
 
 def render_upstream_conf(algo_name, hosts, port, weights=None, method=None):
-    """weights=None means unweighted server entries (rr, and the
+    """weights=None means unweighted server entries (rr_control, and the
     method-based static algorithms below). A dict means every host must
-    have an integer weight 1-100 (aco/mc, both at startup as an
-    equal-weight placeholder and on every later rewrite).
+    have an integer weight 1-100 (the four dynamic algorithms, all at
+    startup as an equal-weight placeholder and on every later rewrite).
 
     method, when given, is an NGINX upstream-block method directive (e.g.
-    "random", "random two", "least_conn") rendered as the first line
-    inside the block. For the static algorithms this is the *entire*
-    selection mechanism, driven by NGINX itself (a dice roll or live
-    connection count) with no weights and no controller involvement at
-    all. combo is the one case that combines both: least_conn as the
-    method, plus weight= entries the sampler keeps rewriting -- NGINX's
-    least_conn then picks the server with the lowest
-    active_connections/weight, so ACO's weights bias which of the
-    least-busy servers wins a tie instead of overriding least_conn
-    outright.
+    "least_conn") rendered as the first line inside the block. For the
+    static algorithms this is the *entire* selection mechanism, driven by
+    NGINX itself (live connection count) with no weights and no
+    controller involvement at all. aco_lc/mc_lc are the cases that
+    combine both: least_conn as the method, plus weight= entries the
+    sampler keeps rewriting -- NGINX's least_conn then picks the server
+    with the lowest active_connections/weight, so the algorithm's weights
+    bias which of the least-busy servers wins a tie instead of overriding
+    least_conn outright.
 
     Every block also gets a `zone` directive (see DEFAULT_ZONE_SIZE
     above), named after the algorithm so each path's shared state stays
