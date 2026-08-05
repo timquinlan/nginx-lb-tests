@@ -6,6 +6,10 @@ The primary contribution isn't the experiment result itself (which algorithm "wi
 
 See `ALGORITHMS.md` for how ACO and Markov Chain each work and why they were picked. See `FINDINGS.md` for the results/conclusions writeup -- what the experiment actually showed, consolidated across every run and every axis varied. See `EXPERIMENTS.md` for what's worth trying next -- knobs to push, ideas not yet built, and the math behind each. See `AGENT.md` for the full architecture writeup, every design tradeoff made along the way (and why), and bugs found/fixed during development.
 
+## TL;DR
+
+NGINX's built-in `least_conn` beats this project's from-scratch adaptive algorithms (ACO, Markov Chain) running on their own, every time -- a zero-lag live signal reliably beats a lagged learned one, no matter how the learning is tuned. But pairing an adaptive algorithm's learned weights *with* `least_conn` (`aco_lc`) beats plain `least_conn` outright, on every stat, reproduced across 10 independent runs with zero exceptions -- the one result in this project that isn't just "how close can a learned algorithm get." See `FINDINGS.md` for the full writeup.
+
 ## Quick start
 
 ```sh
