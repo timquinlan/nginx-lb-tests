@@ -123,6 +123,26 @@ Each backend's simulated latency has two independent parts, both configured per 
 
 **On short runs, "not significant" is the expected, correct result, not a bug** — a few thousand requests over tens of seconds usually isn't enough to separate real algorithm differences from noise, especially against backends with deliberately overlapping latency ranges. See `analysis/README.md`.
 
+## Shape charts (`analysis/shape_charts.py`)
+
+Answers a different question than the rest of `analysis/`: not "how did one run go," but "does the picture change as rps changes, across a multi-run sweep, or is it flat." Built for a 15-run sweep (rps 20/40/80/160/320, 3 repeats each, run in the user's own terminal via `for i in 20 40 80 160 320 20 40 80 160 320 20 40 80 160 320; do python3 run_experiment.py run --rps $i; done`) but not hardcoded to that shape — see below.
+
+**To rebuild:** `python3 analysis/shape_charts.py` from the repo root (needs the same host-side `matplotlib` as any other host-side use of `analysis/` — see `analysis/requirements.txt`). Optional `--run-min`/`--run-max` narrow the `run_index` range if `./logs` also contains older, unrelated runs. Writes `shape_means_by_rps.png` and `shape_deltas_by_rps.png` to `<logs-dir>/analysis`.
+
+**Bucketing is automatic, not hardcoded to 5 rps values or 3 repeats.** `collect_run_means()` groups every clean (non-interrupted), in-range run by its own `rps_per_path` from `runs.log` — a future sweep with different rps values, a different repeat count, or even a single run per rps value still works; a bucket with only one run just plots one dot with no repeat spread rather than erroring.
+
+**Recomputes mean TTFB from each run's raw access log** (`common.parse_access_log` + `common.mean`, the same path `analyze.py` itself uses for point estimates) rather than parsing any run's `runN_stats_report.txt`. Keeps this correct even if that report's text formatting changes later, and means a run doesn't need its own stats report to already exist.
+
+**Chart 1 (`shape_means_by_rps.png`):** one line per algorithm, x=rps, y=mean of that rps bucket's repeat runs' mean TTFB. Each repeat's own value is also scattered as a small, same-colored, semi-transparent dot — a single mean-of-means line would erase exactly the repeat-to-repeat noise the "is there a real shape" question depends on seeing.
+
+**Chart 2 (`shape_deltas_by_rps.png`):** two lines, `aco_wrr - mc_wrr` and `aco_lc - mc_lc` (mean TTFB delta in ms; negative = the first algorithm faster), same mean-line-plus-individual-dots treatment, with a dashed zero reference line. `DELTA_PAIRS` is the only place to edit if a different pair of algorithms ever needs the same treatment.
+
+**Repeats are paired by position, not by value.** For the delta chart, `collect_run_means()` appends every algorithm's per-run mean in the same `runs.log` iteration order, so `vals_a[i]` and `vals_b[i]` in `plot_deltas_by_rps()` always come from the same run — `zip()` lines them up correctly without needing to carry `run_index` through explicitly.
+
+**`ip_to_host.json` is loaded once and reused across every run in the sweep**, not re-loaded per run — every run sharing one `./logs` directory also shares one backend pool/network, so the resolved mapping doesn't change run to run. Same assumption `analyze.py`'s own single-run analysis already makes about the snapshot being current; just applied across runs here instead of within one.
+
+First run of this (2026-08-06, the 15-run sweep above): both adaptive-vs-built-in and ACO-vs-MC margins held essentially flat across the 20-320rps range tested — the one soft exception was `aco_lc`/`mc_lc` converging toward a tie at rps=20 while staying ~3-5ms apart at rps≥40.
+
 ## NGINX process model: 4 workers, shared zones
 
 `worker_processes` is `4` (`WORKER_PROCESSES_COUNT` in `controller/entrypoint.py`), and every upstream block carries an NGINX `zone` directive (`DEFAULT_ZONE_SIZE = "64k"` in `controller/nginx/upstream_conf.py`, one uniquely-named zone per algorithm — `rr_control_zone`, `leastconn_zone`, etc. — rendered unconditionally for every algorithm, not opt-in).
